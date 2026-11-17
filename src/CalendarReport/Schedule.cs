@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using M365Graph;
 
-namespace ScheduleReport;
+namespace CalendarReport;
 
 /// <summary>Someone whose schedule is read: their address ("me" for the signed-in user) and display name.</summary>
 public sealed record Person(string Address, string Name)

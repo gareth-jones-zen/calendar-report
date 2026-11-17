@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/CalendarReport/CalendarReport.csproj" />
+  <Project Path="src/CalendarReport.Console/CalendarReport.Console.csproj" />
+
+  <Project Path="tests/CalendarReport.Tests/CalendarReport.Tests.csproj" />
+</Solution>

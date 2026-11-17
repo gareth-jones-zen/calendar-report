@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace ScheduleReport.Tests;
+namespace CalendarReport.Tests;
 
 /// <summary>A source with fixed people, events and work plans. Only "me" has a work plan, as with Graph.</summary>
 internal sealed class FakeSource : ISource
@@ -37,7 +37,7 @@ internal sealed class FakeSource : ISource
 
 public sealed class ReportTests : IDisposable
 {
-    private readonly string dir = Path.Combine(Path.GetTempPath(), "schedule-report-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string dir = Path.Combine(Path.GetTempPath(), "calendar-report-tests-" + Guid.NewGuid().ToString("N"));
     private readonly FakeSource source = new();
 
     public ReportTests()

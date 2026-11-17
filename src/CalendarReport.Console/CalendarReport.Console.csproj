@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>schedule-report</AssemblyName>
-    <RootNamespace>ScheduleReport</RootNamespace>
+    <AssemblyName>calendar-report</AssemblyName>
+    <RootNamespace>CalendarReport</RootNamespace>
     <PublishAot>true</PublishAot>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\ScheduleReport\ScheduleReport.csproj" />
+    <ProjectReference Include="..\CalendarReport\CalendarReport.csproj" />
   </ItemGroup>
 </Project>

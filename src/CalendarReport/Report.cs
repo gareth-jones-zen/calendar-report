@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using PyCompat;
 
-namespace ScheduleReport;
+namespace CalendarReport;
 
 /// <summary>One person's part of a report: their events, their work plan, or both (null where it wasn't asked for, or
 /// can't be read: WorkPlanUnreadable says which).</summary>

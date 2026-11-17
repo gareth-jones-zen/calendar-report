@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 using PyCompat;
 using Tomlyn.Model;
 
-namespace ScheduleReport;
+namespace CalendarReport;
 
 /// <summary>Settings that can't be used, or a request that can't be met: the command line reports the message and
 /// exits 2.</summary>
@@ -13,7 +13,7 @@ public class UsageException(string message) : Exception(message);
 ///     login_hint = "you@example.com"
 ///     tenant = "organizations"            # or a tenant id
 ///     msal_cache = "..."                  # optional: share another tool's sign-in cache
-///     log_file = "..."                    # optional; default %LOCALAPPDATA%\schedule-report\schedule-report.log
+///     log_file = "..."                    # optional; default %LOCALAPPDATA%\calendar-report\calendar-report.log
 ///     time_zone = "GMT Standard Time"     # optional: times are shown in this (Windows) time zone; default the PC's
 ///     lookup_scope = "User.ReadBasic.All" # optional: the permission used to look people up by name
 ///
@@ -24,19 +24,19 @@ public class UsageException(string message) : Exception(message);
 /// the setting. Paths may use ~ and %VARIABLES%; a relative path is relative to the settings file.</summary>
 public sealed partial class Config
 {
-    public const string EnvConfig = "SCHEDULE_REPORT_CONFIG";
+    public const string EnvConfig = "CALENDAR_REPORT_CONFIG";
 
     // Explicit "\n" (a raw literal would take the .cs file's line endings), written with CRLF.
     public const string Template =
-        "# schedule-report settings. See the README.\n" +
+        "# calendar-report settings. See the README.\n" +
         "# login_hint = \"you@example.com\"\n" +
         "# tenant = \"organizations\"          # or your organisation's tenant id\n" +
         "# msal_cache = \"...\"                # another tool's token cache, to share its sign-in\n" +
-        "# log_file = \"...\"                  # default %LOCALAPPDATA%\\schedule-report\\schedule-report.log\n" +
+        "# log_file = \"...\"                  # default %LOCALAPPDATA%\\calendar-report\\calendar-report.log\n" +
         "# time_zone = \"GMT Standard Time\"   # default: this PC's time zone\n" +
         "# lookup_scope = \"User.ReadBasic.All\"\n" +
         "\n" +
-        "# Names for lists of people, to use in place of addresses: schedule-report events team\n" +
+        "# Names for lists of people, to use in place of addresses: calendar-report events team\n" +
         "# [groups]\n" +
         "# team = [\"ann@example.com\", \"bob@example.com\"]\n";
 
@@ -56,20 +56,20 @@ public sealed partial class Config
     public static string? Environment(string name) =>
         string.IsNullOrEmpty(name) || name.Contains('\0') ? null : System.Environment.GetEnvironmentVariable(name);
 
-    /// <summary>%LOCALAPPDATA%\schedule-report: the default log.</summary>
+    /// <summary>%LOCALAPPDATA%\calendar-report: the default log.</summary>
     public static string Local(Func<string, string?>? env = null)
     {
         env ??= Environment;
         var local = env("LOCALAPPDATA");
-        return PyPath.Pure(System.IO.Path.Combine(string.IsNullOrEmpty(local) ? PyPath.Home(env) : local, "schedule-report"));
+        return PyPath.Pure(System.IO.Path.Combine(string.IsNullOrEmpty(local) ? PyPath.Home(env) : local, "calendar-report"));
     }
 
-    /// <summary>%APPDATA%\schedule-report\config.toml.</summary>
+    /// <summary>%APPDATA%\calendar-report\config.toml.</summary>
     public static string DefaultPath(Func<string, string?>? env = null)
     {
         env ??= Environment;
         var appData = env("APPDATA");
-        return PyPath.Pure(System.IO.Path.Combine(string.IsNullOrEmpty(appData) ? PyPath.Home(env) : appData, "schedule-report", "config.toml"));
+        return PyPath.Pure(System.IO.Path.Combine(string.IsNullOrEmpty(appData) ? PyPath.Home(env) : appData, "calendar-report", "config.toml"));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9_-]+\z", RegexOptions.CultureInvariant)]
@@ -98,7 +98,7 @@ public sealed partial class Config
             }
         }
         else if (named is not null)
-            throw new UsageException($"No settings file at {full}. Run `schedule-report config` to create one.");
+            throw new UsageException($"No settings file at {full}. Run `calendar-report config` to create one.");
 
         foreach (var key in raw.Keys)
             if (!TopKeys.Contains(key))
@@ -146,7 +146,7 @@ public sealed partial class Config
             LoginHint = Text("login_hint"),
             Tenant = Text("tenant") is { Length: > 0 } t ? t : "organizations",
             MsalCache = Text("msal_cache") is { Length: > 0 } cache ? PathSetting(cache) : null,
-            LogFile = Text("log_file") is { Length: > 0 } log ? PathSetting(log) : PyPath.Pure(System.IO.Path.Combine(Local(env), "schedule-report.log")),
+            LogFile = Text("log_file") is { Length: > 0 } log ? PathSetting(log) : PyPath.Pure(System.IO.Path.Combine(Local(env), "calendar-report.log")),
             TimeZone = zone,
             LookupScope = Text("lookup_scope") is { Length: > 0 } scope ? scope : "User.ReadBasic.All",
             Groups = groups,

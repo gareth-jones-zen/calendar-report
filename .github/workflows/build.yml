@@ -13,23 +13,23 @@ jobs:
       # The shared libraries are a sibling checkout (Directory.Build.props: ..\background-tools-lib).
       - uses: actions/checkout@v5
         with:
-          path: schedule-report
+          path: calendar-report
       - uses: actions/checkout@v5
         with:
           repository: gareth-jones-zen/background-tools-lib
           path: background-tools-lib
       - uses: actions/setup-dotnet@v5
         with:
-          global-json-file: schedule-report/global.json
+          global-json-file: calendar-report/global.json
       - name: Build and test
-        working-directory: schedule-report
+        working-directory: calendar-report
         run: dotnet test -c Release
       - name: Publish (Native AOT)
-        working-directory: schedule-report
+        working-directory: calendar-report
         run: |
-          dotnet publish src/ScheduleReport.Console -c Release -r win-x64 -o out
+          dotnet publish src/CalendarReport.Console -c Release -r win-x64 -o out
           Get-ChildItem out/*.exe | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
-          name: schedule-report-win-x64
-          path: schedule-report/out/*.exe
+          name: calendar-report-win-x64
+          path: calendar-report/out/*.exe

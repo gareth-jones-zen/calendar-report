@@ -6,6 +6,6 @@
     <PackageReference Include="Tomlyn" Version="2.11.1" />
   </ItemGroup>
   <ItemGroup>
-    <InternalsVisibleTo Include="ScheduleReport.Tests" />
+    <InternalsVisibleTo Include="CalendarReport.Tests" />
   </ItemGroup>
 </Project>

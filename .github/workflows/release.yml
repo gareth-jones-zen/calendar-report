@@ -19,11 +19,11 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: schedule-report
+        working-directory: calendar-report
     steps:
       - uses: actions/checkout@v5
         with:
-          path: schedule-report
+          path: calendar-report
 
       - uses: actions/checkout@v5
         with:
@@ -37,7 +37,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v5
         with:
-          global-json-file: schedule-report/global.json
+          global-json-file: calendar-report/global.json
 
       - name: Version from the tag
         id: version
@@ -54,17 +54,17 @@ jobs:
         shell: pwsh
         run: |
           $v = '${{ steps.version.outputs.version }}'
-          dotnet publish src/ScheduleReport.Console -c Release -r win-x64 -o publish -p:Version=$v
-          & ./publish/schedule-report.exe --version
+          dotnet publish src/CalendarReport.Console -c Release -r win-x64 -o publish -p:Version=$v
+          & ./publish/calendar-report.exe --version
 
       - name: Package
         shell: pwsh
         run: |
-          $name = "schedule-report-${{ steps.version.outputs.version }}-win-x64"
+          $name = "calendar-report-${{ steps.version.outputs.version }}-win-x64"
           New-Item -ItemType Directory -Path dist, "stage/$name" | Out-Null
-          Copy-Item publish/schedule-report.exe, README.md "stage/$name/"
+          Copy-Item publish/calendar-report.exe, README.md "stage/$name/"
           Compress-Archive -Path "stage/$name/*" -DestinationPath "dist/$name.zip"
-          Copy-Item publish/schedule-report.exe dist/
+          Copy-Item publish/calendar-report.exe dist/
           # LF line endings, so `sha256sum -c` works as well as Get-FileHash
           $sums = Get-ChildItem dist -File | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
@@ -76,14 +76,14 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            schedule-report/dist/*.zip
-            schedule-report/dist/*.exe
+            calendar-report/dist/*.zip
+            calendar-report/dist/*.exe
 
       - name: Create the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $flags = @('--generate-notes', '--title', "schedule-report ${{ steps.version.outputs.version }}")
+          $flags = @('--generate-notes', '--title', "calendar-report ${{ steps.version.outputs.version }}")
           if ('${{ steps.version.outputs.prerelease }}' -eq 'True') { $flags += '--prerelease' }
           gh release create '${{ github.ref_name }}' dist/*.zip dist/*.exe dist/SHA256SUMS.txt @flags

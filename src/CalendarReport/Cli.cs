@@ -4,7 +4,7 @@ using System.Text;
 using M365Graph;
 using WinBackground;
 
-namespace ScheduleReport;
+namespace CalendarReport;
 
 /// <summary>Everything the command line touches outside itself, so tests can give it fakes.</summary>
 public sealed class CliHost
@@ -22,27 +22,27 @@ public sealed class CliHost
     public Func<DateTime> Today { get; init; } = () => DateTime.Today;
 }
 
-/// <summary>schedule-report: read people's calendars and work plans for a range of days. It only reads. Exit codes: 0
+/// <summary>calendar-report: read people's calendars and work plans for a range of days. It only reads. Exit codes: 0
 /// done; 1 failed; 2 settings, arguments or sign-in.</summary>
 public static class Cli
 {
-    public const string Prog = "schedule-report";
+    public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: schedule-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
         Usage + "\n\n" +
-        "schedule-report: read people's Outlook calendars and work plans (office, remote, time off) for a range of days.\n" +
+        "calendar-report: read people's Outlook calendars and work plans (office, remote, time off) for a range of days.\n" +
         "It only reads.\n\n" +
-        "    schedule-report events [PEOPLE...]       every event in their calendars\n" +
-        "    schedule-report events [PEOPLE...] --work-plan   ...with each day's work plan\n" +
-        "    schedule-report work-plan [PEOPLE...]    where they're working each day\n" +
-        "    schedule-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
-        "    schedule-report groups                   the groups in the settings\n" +
-        "    schedule-report config                   create the settings file (if missing) and say where it is\n" +
-        "    schedule-report sign-in                  sign in to Microsoft (once; opens a browser)\n\n" +
+        "    calendar-report events [PEOPLE...]       every event in their calendars\n" +
+        "    calendar-report events [PEOPLE...] --work-plan   ...with each day's work plan\n" +
+        "    calendar-report work-plan [PEOPLE...]    where they're working each day\n" +
+        "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
+        "    calendar-report groups                   the groups in the settings\n" +
+        "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
+        "    calendar-report sign-in                  sign in to Microsoft (once; opens a browser)\n\n" +
         "  PEOPLE: me (the default), addresses, names, or groups from the settings; commas or spaces between.\n\n" +
         "  events and work-plan:\n" +
         "    --from DATE        the first day (yyyy-mm-dd, today, tomorrow or monday); default today\n" +
@@ -54,7 +54,7 @@ public static class Cli
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
         "  --version        show program's version number and exit\n" +
-        "  --config CONFIG  settings file (default %APPDATA%\\schedule-report\\config.toml)\n";
+        "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
     private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
@@ -81,7 +81,7 @@ public static class Cli
         Tenant = config.Tenant,
         LoginHint = config.LoginHint,
         Scopes = [GraphSource.CalendarScope, config.LookupScope],
-        SignInHint = "At a console, run: schedule-report sign-in",
+        SignInHint = "At a console, run: calendar-report sign-in",
         Log = Logger.Create(config.LogFile),
     });
 
@@ -110,10 +110,10 @@ public static class Cli
         {
             if (options.Command == "config")
             {
-                host.Out.WriteLine(ScheduleReport.Config.CreateDefault(options.Config ?? host.Env(ScheduleReport.Config.EnvConfig), host.Env));
+                host.Out.WriteLine(CalendarReport.Config.CreateDefault(options.Config ?? host.Env(CalendarReport.Config.EnvConfig), host.Env));
                 return 0;
             }
-            var config = ScheduleReport.Config.Load(options.Config, host.Env);
+            var config = CalendarReport.Config.Load(options.Config, host.Env);
             switch (options.Command)
             {
                 case "sign-in":

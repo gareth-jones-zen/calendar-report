@@ -10,6 +10,6 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\ScheduleReport\ScheduleReport.csproj" />
+    <ProjectReference Include="..\..\src\CalendarReport\CalendarReport.csproj" />
   </ItemGroup>
 </Project>
