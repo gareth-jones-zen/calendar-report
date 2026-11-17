@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using PyCompat;
+using Tomlyn;
 using Tomlyn.Model;
 
 namespace CalendarReport;
@@ -29,6 +30,7 @@ public sealed partial class Config
     // Explicit "\n" (a raw literal would take the .cs file's line endings), written with CRLF.
     public const string Template =
         "# calendar-report settings. See the README.\n" +
+        "# base = \"base-config.toml\"        # settings shared with other tools\n" +
         "# login_hint = \"you@example.com\"\n" +
         "# tenant = \"organizations\"          # or your organisation's tenant id\n" +
         "# msal_cache = \"...\"                # another tool's token cache, to share its sign-in\n" +
@@ -40,8 +42,11 @@ public sealed partial class Config
         "# [groups]\n" +
         "# team = [\"ann@example.com\", \"bob@example.com\"]\n";
 
-    private static readonly string[] TopKeys =
+    /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
+    public static readonly string[] KnownKeys =
         ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "groups"];
+
+    private static readonly string[] TopKeys = KnownKeys;
 
     public required string Path { get; init; }
     public string? LoginHint { get; init; }
@@ -90,7 +95,17 @@ public sealed partial class Config
                 var text = PyStr.ReadText(full);
                 if (text.StartsWith('﻿'))
                     text = text[1..];
-                raw = PyToml.Read(text, full);
+                var read = BaseSettings.Read(text, full, env, KnownKeys);
+                raw = read.Raw;
+                env = read.Env;   // the base's [paths], then the environment
+            }
+            catch (TomlException error)
+            {
+                throw new UsageException($"{full}: {error.Message.TrimEnd()}");
+            }
+            catch (FormatException error)   // the base file: the message names it
+            {
+                throw new UsageException(error.Message.TrimEnd());
             }
             catch (Exception error) when (error is not (IOException or UnauthorizedAccessException or UsageException))
             {

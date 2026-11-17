@@ -77,12 +77,26 @@ JSON has the range, the time zone and, per person, `events` and `workPlan` (with
 read). CSV has a row per event, with a `work_plan` column when `--work-plan` is given, or for `work-plan` alone, a
 row per stretch of a day.
 
+## Sharing settings with other tools: `base`
+
+Several tools built on the shared library can keep their common settings in one file, named at the top of each
+tool's settings: `base = "base-config.toml"` (relative to the settings file). Then:
+
+- **the base's `[paths]` are variables** for this tool's paths, looked up before the environment: with
+  `EA_LOCAL = "%LOCALAPPDATA%/claude-ea"` there, `log_file = "%EA_LOCAL%/calendar-report.log"` works here;
+- **its other settings that calendar-report knows and this file doesn't set are used**, typically `login_hint`,
+  `tenant`, `msal_cache` and `time_zone`;
+- **a table such as `[groups]` applies only if this file has that section too**, its own entries winning.
+
+The loader is background-tools-lib's `PyCompat.BaseSettings`.
+
 ## Settings
 
 `%APPDATA%\calendar-report\config.toml` by default (`--config` or `CALENDAR_REPORT_CONFIG` for another). None of it
 is needed to read your own calendar.
 
 ```toml
+base = "base-config.toml"   # optional: settings shared with other tools
 login_hint = "you@example.com"
 tenant = "organizations"             # or your organisation's tenant id
 msal_cache = "..."                   # optional: another tool's token cache, to share its sign-in
