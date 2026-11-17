@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>schedule-report</AssemblyName>
+    <RootNamespace>ScheduleReport</RootNamespace>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ScheduleReport\ScheduleReport.csproj" />
+  </ItemGroup>
+</Project>

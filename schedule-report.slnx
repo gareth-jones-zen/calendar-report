@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/ScheduleReport/ScheduleReport.csproj" />
+  <Project Path="src/ScheduleReport.Console/ScheduleReport.Console.csproj" />
+
+  <Project Path="tests/ScheduleReport.Tests/ScheduleReport.Tests.csproj" />
+</Solution>
