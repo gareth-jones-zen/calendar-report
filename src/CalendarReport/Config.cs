@@ -21,6 +21,8 @@ public class UsageException(string message) : Exception(message);
 ///     [groups]                            # optional: names for lists of people
 ///     team = ["ann@example.com", "Bob Smith"]
 ///
+///     [summary], [view.NAME], [[rules.NAME]]    # optional: how `summary` adds time up (SummarySettings)
+///
 /// The file is read strictly: an unknown key, a key given twice or a value of the wrong type is an error that names
 /// the setting. Paths may use ~ and %VARIABLES%; a relative path is relative to the settings file.</summary>
 public sealed partial class Config
@@ -44,7 +46,7 @@ public sealed partial class Config
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "groups"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "groups", "summary", "view", "rules"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -56,6 +58,9 @@ public sealed partial class Config
     public required TimeZoneInfo TimeZone { get; init; }
     public string LookupScope { get; init; } = "User.ReadBasic.All";
     public IReadOnlyDictionary<string, IReadOnlyList<string>> Groups { get; init; } = new Dictionary<string, IReadOnlyList<string>>();
+
+    /// <summary>[summary], [view.NAME] and [rules.NAME]: how `summary` adds time up (0.4.0).</summary>
+    public SummarySettings Summary { get; init; } = SummarySettings.Parse([], "", new Dictionary<string, IReadOnlyList<string>>());
 
     /// <summary>The real environment; an empty name is no variable.</summary>
     public static string? Environment(string name) =>
@@ -165,6 +170,7 @@ public sealed partial class Config
             TimeZone = zone,
             LookupScope = Text("lookup_scope") is { Length: > 0 } scope ? scope : "User.ReadBasic.All",
             Groups = groups,
+            Summary = SummarySettings.Parse(raw, full, groups),
         };
     }
 

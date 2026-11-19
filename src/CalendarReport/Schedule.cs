@@ -36,6 +36,15 @@ public interface ISource
 
     /// <summary>The work plan, or null where it can't be read: Graph serves only your own.</summary>
     IReadOnlyList<WorkSegment>? WorkPlan(Person person, DateTime from, DateTime to);
+
+    /// <summary>The signed-in user's address (what "me" means).</summary>
+    string MyAddress();
+
+    /// <summary>Their manager's address, from the directory; null if they have none.</summary>
+    string? Manager(Person person);
+
+    /// <summary>The job title the directory gives an address; null for someone outside the organisation.</summary>
+    string? JobTitle(string address);
 }
 
 /// <summary>Microsoft Graph. Reading someone else's calendar needs Calendars.Read.Shared and their calendar shared
@@ -78,7 +87,15 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
             }
             catch (GraphRequestException error) when ((int)error.Status == 404)
             {
-                throw new UsageException($"No one in the directory has the address {who}.");
+                // /users/{x} takes the sign-in name, which isn't always the email address (andy.wilson@ can sign in
+                // as andrew.wilson@), so look for the address too.
+                var quoted = who.Replace("'", "''", StringComparison.Ordinal);
+                var match = graph.PagesAsync($"/users?$filter=mail eq '{Uri.EscapeDataString(quoted)}'&$select=displayName,mail,userPrincipalName",
+                    Scopes, Headers).ToBlockingEnumerable().OfType<JsonObject>().FirstOrDefault();
+                if (match is null)
+                    throw new UsageException($"No one in the directory has the address {who}.");
+                var address = Text(match, "mail") ?? who;
+                return IsMe(address) ? Resolve("me") : new Person(address, Text(match, "displayName") ?? who);
             }
         }
         var escaped = who.Replace("'", "''", StringComparison.Ordinal);
@@ -113,6 +130,49 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
     }
 
     private string? myAddress;
+
+    public string MyAddress()
+    {
+        if (myAddress is null)
+            Resolve("me");
+        return myAddress ?? "me";
+    }
+
+    private const string NeedsUserRead =
+        "Summary rules naming a manager or an organiser's title need lookup_scope = \"User.Read.All\" in the settings.";
+
+    public string? Manager(Person person)
+    {
+        try
+        {
+            var manager = Get($"{person.GraphPath}/manager?$select=mail,userPrincipalName");
+            return Text(manager, "mail") ?? Text(manager, "userPrincipalName");
+        }
+        catch (GraphRequestException error) when ((int)error.Status == 404)
+        {
+            return null;
+        }
+        catch (GraphRequestException error) when ((int)error.Status == 403)
+        {
+            throw new UsageException(NeedsUserRead);
+        }
+    }
+
+    public string? JobTitle(string address)
+    {
+        try
+        {
+            return Text(Get($"/users/{Uri.EscapeDataString(address)}?$select=jobTitle"), "jobTitle");
+        }
+        catch (GraphRequestException error) when ((int)error.Status is 400 or 404)
+        {
+            return null;   // someone outside the organisation
+        }
+        catch (GraphRequestException error) when ((int)error.Status == 403)
+        {
+            throw new UsageException(NeedsUserRead);
+        }
+    }
 
     /// <summary>Whether an address is the signed-in user's, so their own work plan can be read for it.</summary>
     private bool IsMe(string address)

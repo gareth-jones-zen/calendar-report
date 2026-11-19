@@ -29,7 +29,7 @@ public static class Cli
     public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
@@ -39,6 +39,7 @@ public static class Cli
         "    calendar-report events [PEOPLE...]       every event in their calendars\n" +
         "    calendar-report events [PEOPLE...] --work-plan   ...with each day's work plan\n" +
         "    calendar-report work-plan [PEOPLE...]    where they're working each day\n" +
+        "    calendar-report summary [PEOPLE...]      where their time went, by week (rules in the settings)\n" +
         "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
         "    calendar-report groups                   the groups in the settings\n" +
         "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
@@ -51,12 +52,16 @@ public static class Cli
         "    --format F         table (default), json or csv\n" +
         "    --out FILE         write it to a file instead\n" +
         "    --cancelled        events: include cancelled meetings still on the calendar\n\n" +
+        "  summary (also --from, --to, --days, --format table|json, --out; default last week):\n" +
+        "    --weeks N          how many weeks, from --from (or last week's Monday)\n" +
+        "    --view NAME        a view from the settings (default: summary.default_view)\n" +
+        "    --depth D          groups, buckets or events (each event, with the minutes it counted)\n\n" +
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
         "  --version        show program's version number and exit\n" +
         "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
-    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "who", "groups"];
+    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
 
     public static string Version =>
@@ -67,8 +72,8 @@ public static class Cli
         public string? Config;
         public string Command = "";
         public List<string> People = [];
-        public string? From, To, Out;
-        public int? Days;
+        public string? From, To, Out, View, Depth;
+        public int? Days, Weeks;
         public string Format = "table";
         public bool WorkPlan, Cancelled;
     }
@@ -128,23 +133,29 @@ public static class Cli
                     return 0;
             }
             var source = host.Source(config);
-            var people = Reports.People(options.People, config, source);
+            var people = options.Command == "summary" ? [] : Reports.People(options.People, config, source);
             if (options.Command == "who")
             {
                 foreach (var person in people)
                     host.Out.WriteLine(person.Address == "me" ? $"me: {person.Name}" : $"{person.Name} <{person.Address}>");
                 return 0;
             }
-            var (from, to) = Range(options, host.Today());
-            var report = Reports.Read(people, source, from, to, config.TimeZone.Id,
-                events: options.Command == "events", workPlan: options.Command == "work-plan" || options.WorkPlan,
-                cancelled: options.Cancelled);
-            var text = options.Format switch
+            string text;
+            if (options.Command == "summary")
+                text = Summary(options, config, source, host.Today());
+            else
             {
-                "json" => Reports.Json(report),
-                "csv" => Reports.Csv(report),
-                _ => Reports.Table(report),
-            };
+                var (from, to) = Range(options, host.Today());
+                var report = Reports.Read(people, source, from, to, config.TimeZone.Id,
+                    events: options.Command == "events", workPlan: options.Command == "work-plan" || options.WorkPlan,
+                    cancelled: options.Cancelled);
+                text = options.Format switch
+                {
+                    "json" => Reports.Json(report),
+                    "csv" => Reports.Csv(report),
+                    _ => Reports.Table(report),
+                };
+            }
             if (options.Out is { } file)
             {
                 var full = Path.GetFullPath(file);
@@ -171,6 +182,25 @@ public static class Cli
             host.Err.WriteLine($"{error.GetType().Name}: {error.Message}");
             return 1;
         }
+    }
+
+    private static string Summary(Options options, Config config, ISource source, DateTime today)
+    {
+        var settings = config.Summary;
+        var name = options.View ?? settings.DefaultView;
+        if (!settings.Views.TryGetValue(name, out var view))
+            throw new UsageException($"There's no view '{name}' in {config.Path} (views: {string.Join(", ", settings.Views.Keys.Order())}).");
+        var people = Reports.People(options.People.Count > 0 ? options.People : view.People, config, source);
+        if (options.Weeks is { } weeks)
+            options.Days = weeks * 7;
+        options.From ??= Summaries.Monday(today).AddDays(-7).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var (from, to) = Range(options, today);
+        var rules = settings.Rules[view.Rules];
+        var context = new RuleContext(source, config);
+        var summaries = people.Select(p => Summaries.Summarise(p, source.Events(p, from, to), settings, rules, context, from, to)).ToList();
+        var report = new SummaryReport(from, to, config.TimeZone.Id, view, options.Depth ?? view.Depth,
+            Summaries.Order(settings, rules, summaries), settings.FreeBands, summaries);
+        return options.Format == "json" ? Summaries.Json(report) : Summaries.Table(report);
     }
 
     /// <summary>[from, to): from midnight on the first day to midnight after the last.</summary>
@@ -250,7 +280,8 @@ public static class Cli
             return argv[at];
         }
 
-        var reading = options.Command is "events" or "work-plan";
+        var reading = options.Command is "events" or "work-plan" or "summary";
+        var summary = options.Command == "summary";
         for (; i < argv.Count; i++)
         {
             var arg = argv[i];
@@ -274,8 +305,22 @@ public static class Cli
                     break;
                 case (true, "--format"):
                     options.Format = Value(name, ref i, arg).ToLowerInvariant();
-                    if (!Formats.Contains(options.Format))
-                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json', 'csv')");
+                    if (!(summary ? Formats[..2] : Formats).Contains(options.Format))
+                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary ? "" : ", 'csv'")})");
+                    break;
+                case (true, "--weeks") when summary:
+                    var w = Value(name, ref i, arg);
+                    if (!int.TryParse(w, NumberStyles.None, CultureInfo.InvariantCulture, out var weeks) || weeks is < 1 or > 52)
+                        throw new ArgumentsException($"argument --weeks: expected a number from 1 to 52, not '{w}'");
+                    options.Weeks = weeks;
+                    break;
+                case (true, "--view") when summary:
+                    options.View = Value(name, ref i, arg);
+                    break;
+                case (true, "--depth") when summary:
+                    options.Depth = Value(name, ref i, arg).ToLowerInvariant();
+                    if (!SummarySettings.Depths.Contains(options.Depth))
+                        throw new ArgumentsException($"argument --depth: invalid choice: '{options.Depth}' (choose from 'groups', 'buckets', 'events')");
                     break;
                 case (true, "--out"):
                     options.Out = Value(name, ref i, arg);
@@ -295,6 +340,8 @@ public static class Cli
         }
         if (options.To is not null && options.Days is not null)
             throw new ArgumentsException("argument --days: not allowed with argument --to");
+        if (options.Weeks is not null && (options.To is not null || options.Days is not null))
+            throw new ArgumentsException("argument --weeks: not allowed with argument --to or --days");
         if (options.Command == "who" && options.People.Count == 0)
             throw new ArgumentsException("the following arguments are required: people");
         if (options.Command is "config" or "sign-in" or "groups" && options.People.Count > 0)

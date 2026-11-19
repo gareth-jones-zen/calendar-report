@@ -29,6 +29,13 @@ internal sealed class FakeSource : ISource
     public IReadOnlyList<WorkSegment>? WorkPlan(Person person, DateTime from, DateTime to) =>
         person.Address == "me" ? MyPlan.Where(s => s.Start < to && s.End > from).ToList() : null;
 
+    public Dictionary<string, string> Managers { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> Titles { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public string MyAddress() => "gareth@example.com";
+    public string? Manager(Person person) => Managers.GetValueOrDefault(person.Address);
+    public string? JobTitle(string address) => Titles.GetValueOrDefault(address);
+
     public static Event Meeting(string start, string end, string subject, int attendees = 3, bool online = true,
         string showAs = "busy", bool cancelled = false, string? response = "accepted", bool allDay = false) =>
         new(DateTime.Parse(start), DateTime.Parse(end), allDay, showAs, subject, null, "Organiser", attendees, online, "normal", [],
