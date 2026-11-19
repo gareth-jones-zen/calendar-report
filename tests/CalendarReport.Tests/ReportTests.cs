@@ -218,5 +218,21 @@ public sealed class ReportTests : IDisposable
             (e.ShowAs, e.Subject, e.Location, e.Organizer, e.Attendees, e.Online, e.Sensitivity));
         Assert.Equal(["Planned"], e.Categories);
         Assert.Equal("tentativelyAccepted", e.Response);
+        Assert.Equal("ann@example.com", e.OrganizerAddress);
+        Assert.All(e.Invitees!, a => Assert.Equal(new Attendee(null, null, "required", null), a));   // Graph left them bare
+    }
+
+    [Fact]
+    public void Attendees_are_read_with_who_they_are()
+    {
+        var e = GraphSource.ReadEvent(JsonNode.Parse("""
+            {"subject":"1:1","start":{"dateTime":"2026-11-17T10:00:00"},"end":{"dateTime":"2026-11-17T10:30:00"},
+             "organizer":{"emailAddress":{"name":"Ann Smith","address":"ann@example.com"}},
+             "attendees":[{"type":"required","status":{"response":"accepted"},"emailAddress":{"name":"Bob Jones","address":"bob@example.com"}},
+                          {"type":"resource","status":{"response":"none"},"emailAddress":{"name":"Room 2","address":"room2@example.com"}}]}
+            """)!.AsObject());
+        Assert.Equal(2, e.Attendees);
+        Assert.Equal([new Attendee("Bob Jones", "bob@example.com", "required", "accepted"), new Attendee("Room 2", "room2@example.com", "resource", "none")],
+            e.Invitees);
     }
 }

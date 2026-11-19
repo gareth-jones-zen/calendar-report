@@ -153,7 +153,12 @@ public static class Reports
                 item["events"] = new JsonArray(p.Events.Select(e => (JsonNode?)new JsonObject
                 {
                     ["start"] = Iso(e.Start), ["end"] = Iso(e.End), ["allDay"] = e.AllDay, ["showAs"] = e.ShowAs,
-                    ["subject"] = e.Subject, ["location"] = e.Location, ["organizer"] = e.Organizer, ["attendees"] = e.Attendees,
+                    ["subject"] = e.Subject, ["location"] = e.Location, ["organizer"] = e.Organizer,
+                    ["organizerAddress"] = e.OrganizerAddress, ["attendees"] = e.Attendees,
+                    ["invitees"] = new JsonArray((e.Invitees ?? []).Select(a => (JsonNode?)new JsonObject
+                    {
+                        ["name"] = a.Name, ["address"] = a.Address, ["type"] = a.Type, ["response"] = a.Response,
+                    }).ToArray()),
                     ["online"] = e.Online, ["sensitivity"] = e.Sensitivity,
                     ["categories"] = new JsonArray(e.Categories.Select(c => (JsonNode?)JsonValue.Create(c)).ToArray()),
                     ["cancelled"] = e.Cancelled, ["response"] = e.Response,
@@ -188,12 +193,14 @@ public static class Reports
         if (events)
         {
             text.Append(Row(["address", "name", "date", "start", "end", "all_day", "show_as", "subject", "location", "organizer",
-                "attendees", "online", "sensitivity", "categories", "cancelled", "response", .. (plans ? new[] { "work_plan" } : [])]));
+                "attendees", "online", "sensitivity", "categories", "cancelled", "response", "organizer_address", "invitees",
+                .. (plans ? new[] { "work_plan" } : [])]));
             foreach (var p in report.People)
                 foreach (var e in p.Events ?? [])
                     text.Append(Row([p.Person.Address, p.Person.Name, e.Start.ToString("yyyy-MM-dd", En), Iso(e.Start), Iso(e.End),
                         Bool(e.AllDay), e.ShowAs, e.Subject, e.Location ?? "", e.Organizer ?? "", e.Attendees.ToString(En), Bool(e.Online),
-                        e.Sensitivity, string.Join(";", e.Categories), Bool(e.Cancelled), e.Response ?? "",
+                        e.Sensitivity, string.Join(";", e.Categories), Bool(e.Cancelled), e.Response ?? "", e.OrganizerAddress ?? "",
+                        string.Join(";", (e.Invitees ?? []).Select(a => a.Address ?? a.Name ?? "")),
                         .. (plans ? new[] { p.WorkPlan is null ? (p.WorkPlanUnreadable ? "(not readable)" : "") : Where(p.WorkPlan, e.Start.Date) } : [])]));
         }
         else

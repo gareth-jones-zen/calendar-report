@@ -14,7 +14,12 @@ public sealed record Person(string Address, string Name)
 /// <summary>One calendar event, in the report's time zone.</summary>
 public sealed record Event(
     DateTime Start, DateTime End, bool AllDay, string ShowAs, string Subject, string? Location, string? Organizer,
-    int Attendees, bool Online, string Sensitivity, IReadOnlyList<string> Categories, bool Cancelled, string? Response);
+    int Attendees, bool Online, string Sensitivity, IReadOnlyList<string> Categories, bool Cancelled, string? Response,
+    IReadOnlyList<Attendee>? Invitees = null, string? OrganizerAddress = null);
+
+/// <summary>Someone invited (0.3.0; until then only how many): their name and address as Graph gives them, the type
+/// (required, optional, or resource for a room) and their response. The organiser isn't one of them.</summary>
+public sealed record Attendee(string? Name, string? Address, string Type, string? Response);
 
 /// <summary>One stretch of a day in someone's work plan: office, remote or timeOff (Graph's workLocationType), in the
 /// report's time zone.</summary>
@@ -135,7 +140,13 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
             attendees?.Count ?? 0, Flag(o, "isOnlineMeeting"), Text(o, "sensitivity") ?? "normal",
             (o["categories"] as JsonArray)?.Select(c => c?.GetValue<string>() ?? "").Where(c => c.Length > 0).ToList() ?? [],
             Flag(o, "isCancelled"),
-            (o["responseStatus"] as JsonObject) is { } r ? Text(r, "response") : null);
+            (o["responseStatus"] as JsonObject) is { } r ? Text(r, "response") : null,
+            attendees?.OfType<JsonObject>().Select(a => new Attendee(
+                (a["emailAddress"] as JsonObject) is { } ea ? Text(ea, "name") : null,
+                (a["emailAddress"] as JsonObject) is { } eb ? Text(eb, "address") : null,
+                Text(a, "type") ?? "required",
+                (a["status"] as JsonObject) is { } st ? Text(st, "response") : null)).ToList() ?? [],
+            (o["organizer"]?["emailAddress"] as JsonObject) is { } orgAddress ? Text(orgAddress, "address") : null);
     }
 
     /// <summary>A Graph dateTimeTimeZone, already in the report's zone (the Prefer header).</summary>

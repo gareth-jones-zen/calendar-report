@@ -64,8 +64,11 @@ enough of one to be unique) or groups from the settings, separated by spaces or 
 
 - **Events:** every event from `calendarView` between midnight on the first day and midnight after the last, with
   recurring meetings expanded: start, end, all-day, show-as (busy, free, tentative, away, working elsewhere),
-  subject, location, organiser, number of attendees, online or not, sensitivity, categories, cancelled, and your
-  response. You see what Outlook shows you: someone's private appointments carry only what their sharing allows.
+  subject, location, organiser (name, and address in JSON and CSV), number of attendees, online or not, sensitivity,
+  categories, cancelled, and your response. **Since 0.3.0, who the attendees are too**: in JSON, `invitees`, each with
+  `name`, `address`, `type` (required, optional, or `resource` for a room) and `response`; in CSV, their addresses.
+  The organiser isn't one of them. You see what Outlook shows you: someone's private appointments carry only what
+  their sharing allows.
 - **Work plan:** Outlook and Teams' "work hours and location", as stretches of each day: `office`, `remote` or
   `timeOff`. **Only your own can be read.** Asked for anyone else's, Microsoft Graph answers with *yours*, without an
   error, so calendar-report never asks: another person's work plan is reported as "only your own work plan can be
