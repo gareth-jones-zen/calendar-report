@@ -7,7 +7,7 @@ internal sealed class FakeSource : ISource
 {
     public Dictionary<string, Person> People { get; } = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["me"] = new("me", "Gareth Jones"),
+        ["me"] = new("me", "Alex Morgan"),
         ["ann@example.com"] = new("ann@example.com", "Ann Smith"),
         ["Ann Smith"] = new("ann@example.com", "Ann Smith"),
         ["bob@example.com"] = new("bob@example.com", "Bob Jones"),
@@ -32,7 +32,7 @@ internal sealed class FakeSource : ISource
     public Dictionary<string, string> Managers { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Titles { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public string MyAddress() => "gareth@example.com";
+    public string MyAddress() => "alex@example.com";
     public string? Manager(Person person) => Managers.GetValueOrDefault(person.Address);
     public string? JobTitle(string address) => Titles.GetValueOrDefault(address);
 
@@ -114,7 +114,7 @@ public sealed class ReportTests : IDisposable
         var (code, output, _) = Run(Groups, "events", "me", "ann@example.com", "--days", "2", "--work-plan");
         Assert.Equal(0, code);
         Assert.Equal(
-            "Gareth Jones\n" +
+            "Alex Morgan\n" +
             "  Tue 17 Nov   office 09:00-17:00\n" +
             "    00:00-24:00  free      Deadline\n".Replace("00:00-24:00", "all day    ") +
             "    09:00-09:30  busy      Stand-up  · 8 people · online\n" +
@@ -140,7 +140,7 @@ public sealed class ReportTests : IDisposable
     {
         var (_, output, _) = Run(Groups, "work-plan", "--from", "2026-11-17", "--to", "2026-11-19");
         Assert.Equal(
-            "Gareth Jones\n  Tue 17 Nov   office 09:00-17:00\n  Wed 18 Nov   remote 09:00-12:00, time off 13:00-17:00\n" +
+            "Alex Morgan\n  Tue 17 Nov   office 09:00-17:00\n  Wed 18 Nov   remote 09:00-12:00, time off 13:00-17:00\n" +
             "  Thu 19 Nov   no work plan\n", output);
     }
 

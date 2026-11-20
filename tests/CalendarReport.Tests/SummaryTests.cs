@@ -20,7 +20,7 @@ public sealed class SummaryTests : IDisposable
         }
     }
 
-    private const string Me = "gareth@example.com";
+    private const string Me = "alex@example.com";
 
     /// <summary>A meeting with people (addresses; "room@example.com" is a room), organised by the first unless given.</summary>
     private static Event With(string start, string end, string subject, string[] people, string? organizer = null,
