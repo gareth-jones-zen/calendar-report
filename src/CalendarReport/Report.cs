@@ -162,6 +162,8 @@ public static class Reports
                     ["online"] = e.Online, ["sensitivity"] = e.Sensitivity,
                     ["categories"] = new JsonArray(e.Categories.Select(c => (JsonNode?)JsonValue.Create(c)).ToArray()),
                     ["cancelled"] = e.Cancelled, ["response"] = e.Response,
+                    ["type"] = e.Type, ["seriesMasterId"] = e.SeriesMasterId,
+                    ["originalStart"] = e.OriginalStart is { } os ? Iso(os) : null,
                 }).ToArray());
             if (p.WorkPlanUnreadable)
                 item["workPlanNote"] = PersonSchedule.Unreadable;

@@ -9,6 +9,7 @@ calendar-report events ann@example.com "Bob Smith" --from monday --days 5
 calendar-report events team --work-plan --format csv --out week.csv
 calendar-report work-plan --days 14
 calendar-report summary --view team --weeks 4
+calendar-report contacts --flagged
 ```
 
 ```
@@ -40,6 +41,7 @@ calendar-report events [PEOPLE...]              every event in their calendars
 calendar-report events [PEOPLE...] --work-plan  ...with each day's work plan
 calendar-report work-plan [PEOPLE...]           where they're working each day
 calendar-report summary [PEOPLE...]             where their time went, by week (see Summaries)
+calendar-report contacts [PEOPLE...]            when you last met, and next meet, the people in your rings (see Contacts)
 calendar-report who PEOPLE...                   who those words mean
 calendar-report groups                          the groups in the settings
 calendar-report config                          create the settings file and say where it is
@@ -70,6 +72,9 @@ last week, Monday to Sunday), and:
 | `--depth D` | `groups`, `buckets`, or `events`: every event under its bucket, with the minutes it counted |
 
 PEOPLE given on the command line replace the view's.
+
+**For `contacts`:** `--format table|json` and `--out` as above, `--ring NAME` (one ring) and `--flagged` (only the
+people flagged). Its days come from the settings, so it takes no `--from`.
 
 **Exit codes:** 0 done; 1 failed (Microsoft 365 refused, say); 2 settings, arguments or sign-in.
 
@@ -189,6 +194,77 @@ Other people's calendars need sharing as for `events`; their private appointment
 groups and buckets, and `freeBlocks` by band) and every event with its group, bucket or count and the minutes it
 counted; with `team_total`, a `team` the same shape without events.
 
+## Contacts
+
+`contacts` answers "who haven't I met for a while?" from **your own calendar**: for each person in the rings in your
+settings, the last meeting you both attended, the next one booked, and, for a recurring meeting, how many of its
+recent occurrences were lost. Someone past their ring's gap is flagged with `!`.
+
+```
+calendar-report contacts                  everyone in the rings
+calendar-report contacts --flagged        only the flagged
+calendar-report contacts --ring wider     one ring
+calendar-report contacts "Ann Smith"      one person (anyone not in a ring is shown, never flagged)
+```
+
+```
+Contacts as of Fri 20 Nov 2026 13:51: meetings of 6 people or fewer, 23 Jul to 19 Jan. ! = flagged.
+
+core  (flagged after 10 days, or 2 of a recurring meeting's last 4 lost)
+  Ann Smith  last Tue 17 Nov (3 days)      next Tue 24 Nov
+! Bob Jones  last Mon 02 Nov (18 days)     nothing booked
+             "Bob / Pat 1:1" (weekly): 2 of the last 4 lost (09 Nov, 16 Nov)
+             why: Engineering lead for billing
+
+wider  (flagged after 42 days)
+! Cara Lee   last Wed 30 Sep (7 weeks)     nothing booked
+             why: Head of Delivery: plans and architecture in step
+```
+
+**What counts:**
+
+- **A meeting is contact** when it isn't all-day or cancelled, they're its organiser or invited and haven't declined,
+  it has `max_attendees` people or fewer (you included; rooms aren't people), and you accepted or organised it.
+  Someone is matched by address, or by display name.
+- **The next one booked** is the first ahead that you haven't declined (tentative and unanswered count).
+- **Lost occurrences:** for each recurring meeting with them of `cadence_max_attendees` people or fewer (default 2,
+  a 1:1), the dates it was due on are worked out from its pattern, and each of the last `recent_occurrences` (before
+  now) with no occurrence held on that date is lost: cancelled, removed from your calendar, or declined by either of
+  you. An occurrence moved to another day counts for the day it was first due. A series with nothing due from today
+  on has ended, and isn't checked.
+- **Flagged:** no meeting in the lookback; or more days since the last one than the ring's `gap_days`; or, for a ring
+  with `lost_occurrences`, that many of a recurring meeting's last occurrences lost.
+
+```toml
+[contacts]
+max_attendees = 6            # an all-hands isn't contact
+cadence_max_attendees = 2    # recurring meetings checked for lost occurrences: 1:1s
+lookback_days = 120          # how far back to look (at least the longest gap)
+lookahead_days = 60          # how far ahead for the next one booked
+recent_occurrences = 4       # how many of a recurring meeting's latest occurrences are checked
+
+[[contacts.ring]]
+name = "core"
+gap_days = 10
+lost_occurrences = 2         # optional
+people = ["team"]            # addresses, names or groups from [groups]
+[[contacts.ring]]
+name = "wider"
+gap_days = 42
+people = ["Cara Lee", "dev@example.com"]
+
+[contacts.why]               # optional: one line each, by address, name, or the group they came from
+"Cara Lee" = "Head of Delivery: plans and architecture in step"
+"team" = "Direct report"
+```
+
+Someone named in two rings is in the first. **JSON** has `asOf`, the range, and per ring its `gapDays`,
+`lostOccurrences` and `people`, each with `name`, `address`, `why`, `last` and `next` (`start`, `subject`, `people`),
+`daysSince`, `recurring` (`subject`, `pattern`, `checked`, `lost` dates), `flagged` and `reasons`.
+
+**Notes about people are personal data.** A `why` line is about the work, never a judgement of the person: write it
+as if they might read it.
+
 ## What it reads
 
 - **Events:** every event from `calendarView` between midnight on the first day and midnight after the last, with
@@ -196,8 +272,10 @@ counted; with `team_total`, a `team` the same shape without events.
   subject, location, organiser (name, and address in JSON and CSV), number of attendees, online or not, sensitivity,
   categories, cancelled, and your response. **Since 0.3.0, who the attendees are too**: in JSON, `invitees`, each with
   `name`, `address`, `type` (required, optional, or `resource` for a room) and `response`; in CSV, their addresses.
-  The organiser isn't one of them. You see what Outlook shows you: someone's private appointments carry only what
-  their sharing allows.
+  The organiser isn't one of them. **Since 0.5.0, where each sits in a recurring meeting**: in JSON, `type`
+  (`singleInstance`, `occurrence` or `exception`), `seriesMasterId` and `originalStart` (when it was first due);
+  `contacts` also reads each series' pattern. You see what Outlook shows you: someone's private appointments carry
+  only what their sharing allows.
 - **Work plan:** Outlook and Teams' "work hours and location", as stretches of each day: `office`, `remote` or
   `timeOff`. **Only your own can be read.** Asked for anyone else's, Microsoft Graph answers with *yours*, without an
   error, so calendar-report never asks: another person's work plan is reported as "only your own work plan can be
@@ -240,6 +318,7 @@ lookup_scope = "User.ReadBasic.All"  # optional: the permission for name lookups
 team = ["ann@example.com", "Bob Smith"]
 
 # [summary], [view.NAME] and [[rules.NAME]]: see Summaries
+# [contacts], [[contacts.ring]] and [contacts.why]: see Contacts
 ```
 
 The file is read strictly: an unknown setting, or one of the wrong type, is an error that names it.

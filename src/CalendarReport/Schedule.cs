@@ -11,11 +11,21 @@ public sealed record Person(string Address, string Name)
     public string GraphPath => Address == "me" ? "/me" : "/users/" + Uri.EscapeDataString(Address);
 }
 
-/// <summary>One calendar event, in the report's time zone.</summary>
+/// <summary>One calendar event, in the report's time zone. Type (singleInstance, occurrence or exception),
+/// SeriesMasterId and OriginalStart (when an occurrence was first due, before any move) place an occurrence in its
+/// recurring meeting (0.5.0, for `contacts`).</summary>
 public sealed record Event(
     DateTime Start, DateTime End, bool AllDay, string ShowAs, string Subject, string? Location, string? Organizer,
     int Attendees, bool Online, string Sensitivity, IReadOnlyList<string> Categories, bool Cancelled, string? Response,
-    IReadOnlyList<Attendee>? Invitees = null, string? OrganizerAddress = null);
+    IReadOnlyList<Attendee>? Invitees = null, string? OrganizerAddress = null,
+    string? Type = null, string? SeriesMasterId = null, DateTime? OriginalStart = null);
+
+/// <summary>A recurring meeting's pattern, as Graph's patternedRecurrence gives it: the pattern type (daily, weekly,
+/// absoluteMonthly, relativeMonthly, absoluteYearly, relativeYearly), its interval and days, and the range (from
+/// StartDate; to EndDate, or for Count occurrences, or with no end). StartTime is the series' time of day.</summary>
+public sealed record Recurrence(
+    string Subject, string Type, int Interval, IReadOnlyList<DayOfWeek> DaysOfWeek, int DayOfMonth, int Month,
+    string Index, DayOfWeek FirstDayOfWeek, DateTime StartDate, DateTime? EndDate, int? Count, TimeSpan StartTime);
 
 /// <summary>Someone invited (0.3.0; until then only how many): their name and address as Graph gives them, the type
 /// (required, optional, or resource for a room) and their response. The organiser isn't one of them.</summary>
@@ -45,6 +55,9 @@ public interface ISource
 
     /// <summary>The job title the directory gives an address; null for someone outside the organisation.</summary>
     string? JobTitle(string address);
+
+    /// <summary>A recurring meeting's pattern, from its series master in their calendar; null if it can't be read.</summary>
+    Recurrence? Series(Person person, string seriesMasterId);
 }
 
 /// <summary>Microsoft Graph. Reading someone else's calendar needs Calendars.Read.Shared and their calendar shared
@@ -59,7 +72,8 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
     public const string CalendarScope = "Calendars.Read.Shared";
 
     private const string EventFields =
-        "subject,start,end,isAllDay,showAs,location,organizer,attendees,isOnlineMeeting,sensitivity,categories,isCancelled,responseStatus";
+        "subject,start,end,isAllDay,showAs,location,organizer,attendees,isOnlineMeeting,sensitivity,categories,isCancelled,responseStatus,"
+        + "type,seriesMasterId,originalStart";
 
     private IReadOnlyList<string> Scopes => [CalendarScope, config.LookupScope];
 
@@ -116,7 +130,41 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
     {
         var url = $"{person.GraphPath}/calendarView?startDateTime={Utc(from)}&endDateTime={Utc(to)}&$select={EventFields}"
                   + "&$orderby=start/dateTime&$top=250";
-        return graph.PagesAsync(url, Scopes, Headers).ToBlockingEnumerable().OfType<JsonObject>().Select(ReadEvent).ToList();
+        return graph.PagesAsync(url, Scopes, Headers).ToBlockingEnumerable().OfType<JsonObject>()
+            .Select(o => ReadEvent(o, config.TimeZone)).ToList();
+    }
+
+    public Recurrence? Series(Person person, string seriesMasterId)
+    {
+        try
+        {
+            var master = Get($"{person.GraphPath}/events/{Uri.EscapeDataString(seriesMasterId)}?$select=subject,start,recurrence");
+            return ReadRecurrence(master);
+        }
+        catch (GraphRequestException error) when ((int)error.Status is 400 or 403 or 404)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A series master's patternedRecurrence; null if it has none, or one this can't follow.</summary>
+    internal static Recurrence? ReadRecurrence(JsonObject master)
+    {
+        if (master["recurrence"] is not JsonObject recurrence || recurrence["pattern"] is not JsonObject pattern
+            || recurrence["range"] is not JsonObject range || Text(pattern, "type") is not { } type
+            || !DateTime.TryParseExact(Text(range, "startDate"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDate))
+            return null;
+        static int Number(JsonObject o, string key) => o[key] is JsonValue v && v.TryGetValue<int>(out var n) ? n : 0;
+        static DayOfWeek? Day(string? name) => Enum.TryParse<DayOfWeek>(name, true, out var d) ? d : null;
+        var days = (pattern["daysOfWeek"] as JsonArray)?.Select(d => Day(d?.GetValue<string>())).OfType<DayOfWeek>().ToList() ?? [];
+        var rangeType = Text(range, "type") ?? "noEnd";
+        DateTime? endDate = rangeType == "endDate"
+            && DateTime.TryParseExact(Text(range, "endDate"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
+            ? end : null;
+        int? count = rangeType == "numbered" && Number(range, "numberOfOccurrences") > 0 ? Number(range, "numberOfOccurrences") : null;
+        return new Recurrence(Text(master, "subject") ?? "", type, Math.Max(1, Number(pattern, "interval")), days,
+            Number(pattern, "dayOfMonth"), Number(pattern, "month"), Text(pattern, "index") ?? "first",
+            Day(Text(pattern, "firstDayOfWeek")) ?? DayOfWeek.Sunday, startDate, endDate, count, Time(master["start"]).TimeOfDay);
     }
 
     public IReadOnlyList<WorkSegment>? WorkPlan(Person person, DateTime from, DateTime to)
@@ -189,8 +237,15 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
         TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), config.TimeZone)
             .ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
-    internal static Event ReadEvent(JsonObject o)
+    internal static Event ReadEvent(JsonObject o) => ReadEvent(o, null);
+
+    /// <summary>An event; originalStart (UTC, unlike start and end) is put in the zone given.</summary>
+    internal static Event ReadEvent(JsonObject o, TimeZoneInfo? zone)
     {
+        DateTime? originalStart = Text(o, "originalStart") is { } os
+            && DateTimeOffset.TryParse(os, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            ? TimeZoneInfo.ConvertTime(parsed, zone ?? TimeZoneInfo.Local).DateTime
+            : null;
         var attendees = o["attendees"] as JsonArray;
         return new Event(
             Time(o["start"]), Time(o["end"]),
@@ -206,7 +261,8 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
                 (a["emailAddress"] as JsonObject) is { } eb ? Text(eb, "address") : null,
                 Text(a, "type") ?? "required",
                 (a["status"] as JsonObject) is { } st ? Text(st, "response") : null)).ToList() ?? [],
-            (o["organizer"]?["emailAddress"] as JsonObject) is { } orgAddress ? Text(orgAddress, "address") : null);
+            (o["organizer"]?["emailAddress"] as JsonObject) is { } orgAddress ? Text(orgAddress, "address") : null,
+            Text(o, "type"), Text(o, "seriesMasterId"), originalStart);
     }
 
     /// <summary>A Graph dateTimeTimeZone, already in the report's zone (the Prefer header).</summary>

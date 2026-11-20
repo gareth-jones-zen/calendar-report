@@ -36,6 +36,10 @@ internal sealed class FakeSource : ISource
     public string? Manager(Person person) => Managers.GetValueOrDefault(person.Address);
     public string? JobTitle(string address) => Titles.GetValueOrDefault(address);
 
+    /// <summary>Recurring meetings' patterns, by series master id.</summary>
+    public Dictionary<string, Recurrence> Masters { get; } = [];
+    public Recurrence? Series(Person person, string seriesMasterId) => Masters.GetValueOrDefault(seriesMasterId);
+
     public static Event Meeting(string start, string end, string subject, int attendees = 3, bool online = true,
         string showAs = "busy", bool cancelled = false, string? response = "accepted", bool allDay = false) =>
         new(DateTime.Parse(start), DateTime.Parse(end), allDay, showAs, subject, null, "Organiser", attendees, online, "normal", [],

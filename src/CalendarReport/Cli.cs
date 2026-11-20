@@ -20,6 +20,9 @@ public sealed class CliHost
     public Action<Config> SignIn { get; init; } = Cli.SignIn;
 
     public Func<DateTime> Today { get; init; } = () => DateTime.Today;
+
+    /// <summary>The time now, in the settings' time zone.</summary>
+    public Func<TimeZoneInfo, DateTime> Now { get; init; } = zone => TimeZoneInfo.ConvertTime(DateTime.UtcNow, zone);
 }
 
 /// <summary>calendar-report: read people's calendars and work plans for a range of days. It only reads. Exit codes: 0
@@ -29,7 +32,7 @@ public static class Cli
     public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
@@ -40,6 +43,7 @@ public static class Cli
         "    calendar-report events [PEOPLE...] --work-plan   ...with each day's work plan\n" +
         "    calendar-report work-plan [PEOPLE...]    where they're working each day\n" +
         "    calendar-report summary [PEOPLE...]      where their time went, by week (rules in the settings)\n" +
+        "    calendar-report contacts [PEOPLE...]     when you last met, and next meet, the people in your rings\n" +
         "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
         "    calendar-report groups                   the groups in the settings\n" +
         "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
@@ -56,12 +60,15 @@ public static class Cli
         "    --weeks N          how many weeks, from --from (or last week's Monday)\n" +
         "    --view NAME        a view from the settings (default: summary.default_view)\n" +
         "    --depth D          groups, buckets or events (each event, with the minutes it counted)\n\n" +
+        "  contacts (also --format table|json, --out; the days and rings are in the settings):\n" +
+        "    --ring NAME        one ring\n" +
+        "    --flagged          only the people flagged (past the ring's gap, or a recurring meeting lost)\n\n" +
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
         "  --version        show program's version number and exit\n" +
         "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
-    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "who", "groups"];
+    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
 
     public static string Version =>
@@ -72,10 +79,10 @@ public static class Cli
         public string? Config;
         public string Command = "";
         public List<string> People = [];
-        public string? From, To, Out, View, Depth;
+        public string? From, To, Out, View, Depth, Ring;
         public int? Days, Weeks;
         public string Format = "table";
-        public bool WorkPlan, Cancelled;
+        public bool WorkPlan, Cancelled, Flagged;
     }
 
     private sealed class ArgumentsException(string message) : Exception(message);
@@ -133,7 +140,7 @@ public static class Cli
                     return 0;
             }
             var source = host.Source(config);
-            var people = options.Command == "summary" ? [] : Reports.People(options.People, config, source);
+            var people = options.Command is "summary" or "contacts" ? [] : Reports.People(options.People, config, source);
             if (options.Command == "who")
             {
                 foreach (var person in people)
@@ -143,6 +150,12 @@ public static class Cli
             string text;
             if (options.Command == "summary")
                 text = Summary(options, config, source, host.Today());
+            else if (options.Command == "contacts")
+            {
+                var rings = Contacts.Resolve(config, source, options.People, options.Ring);
+                var report = Contacts.Build(config, source, source.Resolve("me"), rings, host.Now(config.TimeZone));
+                text = options.Format == "json" ? Contacts.Json(report, options.Flagged) : Contacts.Table(report, options.Flagged);
+            }
             else
             {
                 var (from, to) = Range(options, host.Today());
@@ -280,8 +293,9 @@ public static class Cli
             return argv[at];
         }
 
-        var reading = options.Command is "events" or "work-plan" or "summary";
+        var reading = options.Command is "events" or "work-plan" or "summary" or "contacts";
         var summary = options.Command == "summary";
+        var contacts = options.Command == "contacts";
         for (; i < argv.Count; i++)
         {
             var arg = argv[i];
@@ -291,6 +305,14 @@ public static class Cli
                 case (_, "-h" or "--help"):
                     host.Out.Write(Help);
                     return null;
+                case (true, "--ring") when contacts:
+                    options.Ring = Value(name, ref i, arg);
+                    break;
+                case (true, "--flagged") when contacts:
+                    options.Flagged = true;
+                    break;
+                case (true, "--from" or "--to" or "--days") when contacts:
+                    throw new ArgumentsException($"unrecognized arguments: {arg} (contacts reads the days in the settings' [contacts])");
                 case (true, "--from"):
                     options.From = Value(name, ref i, arg);
                     break;
@@ -305,8 +327,8 @@ public static class Cli
                     break;
                 case (true, "--format"):
                     options.Format = Value(name, ref i, arg).ToLowerInvariant();
-                    if (!(summary ? Formats[..2] : Formats).Contains(options.Format))
-                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary ? "" : ", 'csv'")})");
+                    if (!(summary || contacts ? Formats[..2] : Formats).Contains(options.Format))
+                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary || contacts ? "" : ", 'csv'")})");
                     break;
                 case (true, "--weeks") when summary:
                     var w = Value(name, ref i, arg);
