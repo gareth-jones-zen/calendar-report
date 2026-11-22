@@ -32,7 +32,7 @@ public static class Cli
     public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,slots,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
@@ -44,6 +44,7 @@ public static class Cli
         "    calendar-report work-plan [PEOPLE...]    where they're working each day\n" +
         "    calendar-report summary [PEOPLE...]      where their time went, by week (rules in the settings)\n" +
         "    calendar-report contacts [PEOPLE...]     when you last met, and next meet, the people in your rings\n" +
+        "    calendar-report slots PEOPLE... --minutes N   times for a meeting with them, and what's in the way\n" +
         "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
         "    calendar-report groups                   the groups in the settings\n" +
         "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
@@ -63,12 +64,21 @@ public static class Cli
         "  contacts (also --format table|json, --out; the days and rings are in the settings):\n" +
         "    --ring NAME        one ring\n" +
         "    --flagged          only the people flagged (past the ring's gap, or a recurring meeting lost)\n\n" +
+        "  slots (you're always included, as essential; it only prints, so there's no --out):\n" +
+        "    --minutes N        how long (required)\n" +
+        "    --optional PEOPLE  people who'd be good to have but aren't essential (repeat it, or use commas)\n" +
+        "    --from DATE        the first day (default tomorrow)\n" +
+        "    --by DATE          when you'd like it by: a preference (default 10 working days on)\n" +
+        "    --until DATE       the last day looked at (default [slots] past_by_days working days after --by)\n" +
+        "    --place P          in-person, online or either (default either): in-person puts your office days first\n" +
+        "    --max N            how many candidates (default [slots] max_candidates)\n" +
+        "    --format F         table (default) or json; --json is the same as --format json\n\n" +
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
         "  --version        show program's version number and exit\n" +
         "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
-    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "who", "groups"];
+    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "slots", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
 
     public static string Version =>
@@ -81,6 +91,9 @@ public static class Cli
         public List<string> People = [];
         public string? From, To, Out, View, Depth, Ring;
         public int? Days, Weeks;
+        public List<string> Optional = [];
+        public string? By, Until, Place;
+        public int? Minutes, Max;
         public string Format = "table";
         public bool WorkPlan, Cancelled, Flagged;
     }
@@ -140,7 +153,12 @@ public static class Cli
                     return 0;
             }
             var source = host.Source(config);
-            var people = options.Command is "summary" or "contacts" ? [] : Reports.People(options.People, config, source);
+            if (options.Command == "slots")
+            {
+                host.Out.Write(SlotsCommand(options, config, source, host.Today(), host.Now(config.TimeZone)));
+                return 0;
+            }
+            var people =options.Command is "summary" or "contacts" ? [] : Reports.People(options.People, config, source);
             if (options.Command == "who")
             {
                 foreach (var person in people)
@@ -214,6 +232,34 @@ public static class Cli
         var report = new SummaryReport(from, to, config.TimeZone.Id, view, options.Depth ?? view.Depth,
             Summaries.Order(settings, rules, summaries), settings.FreeBands, summaries);
         return options.Format == "json" ? Summaries.Json(report) : Summaries.Table(report);
+    }
+
+    /// <summary>`slots` (0.7.0): the request from the options, then the report. You come first among the essential
+    /// people; anyone named both ways is essential.</summary>
+    private static string SlotsCommand(Options options, Config config, ISource source, DateTime today, DateTime now)
+    {
+        if (options.Minutes is not { } minutes)
+            throw new UsageException("slots needs --minutes: how long the meeting is.");
+        var me = source.Resolve("me");
+        var essential = new List<Person> { me };
+        foreach (var p in Reports.People(options.People, config, source))
+            if (!essential.Any(e => string.Equals(e.Address, p.Address, StringComparison.OrdinalIgnoreCase)))
+                essential.Add(p);
+        var optional = options.Optional.Count == 0 ? [] : Reports.People(options.Optional, config, source)
+            .Where(p => !essential.Any(e => string.Equals(e.Address, p.Address, StringComparison.OrdinalIgnoreCase))).ToList();
+        var from = options.From is { } f ? Day(f, today, "--from") : today.Date.AddDays(1);
+        var by = options.By is { } b ? Day(b, today, "--by") : Slots.AddWorkingDays(from, 10);
+        if (by < from)
+            throw new UsageException($"--by ({by:yyyy-MM-dd}) is before --from ({from:yyyy-MM-dd}).");
+        var until = options.Until is { } u ? Day(u, today, "--until") : Slots.AddWorkingDays(by, config.Slots.PastByDays);
+        if (until < by)
+            throw new UsageException($"--until ({until:yyyy-MM-dd}) is before --by ({by:yyyy-MM-dd}).");
+        if ((until - from).TotalDays > 62)
+            throw new UsageException("That's more than two months to look through: ask for a shorter range.");
+        var request = new SlotRequest(essential, optional, minutes, from, by, until, options.Place ?? "either",
+            options.Max ?? config.Slots.MaxCandidates);
+        var report = Slots.Build(config, source, request, now);
+        return options.Format == "json" ? Slots.Json(report) : Slots.Table(report);
     }
 
     /// <summary>[from, to): from midnight on the first day to midnight after the last.</summary>
@@ -293,9 +339,13 @@ public static class Cli
             return argv[at];
         }
 
-        var reading = options.Command is "events" or "work-plan" or "summary" or "contacts";
+        var reading = options.Command is "events" or "work-plan" or "summary" or "contacts" or "slots";
         var summary = options.Command == "summary";
         var contacts = options.Command == "contacts";
+        var slots = options.Command == "slots";
+        int Number(string name, string text, int min, int max) =>
+            int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n >= min && n <= max
+                ? n : throw new ArgumentsException($"argument {name}: expected a number from {min} to {max}, not '{text}'");
         for (; i < argv.Count; i++)
         {
             var arg = argv[i];
@@ -305,6 +355,31 @@ public static class Cli
                 case (_, "-h" or "--help"):
                     host.Out.Write(Help);
                     return null;
+                case (true, "--minutes") when slots:
+                    options.Minutes = Number(name, Value(name, ref i, arg), 5, 480);
+                    break;
+                case (true, "--max") when slots:
+                    options.Max = Number(name, Value(name, ref i, arg), 1, 100);
+                    break;
+                case (true, "--optional") when slots:
+                    options.Optional.Add(Value(name, ref i, arg));
+                    break;
+                case (true, "--by") when slots:
+                    options.By = Value(name, ref i, arg);
+                    break;
+                case (true, "--until") when slots:
+                    options.Until = Value(name, ref i, arg);
+                    break;
+                case (true, "--place") when slots:
+                    options.Place = Value(name, ref i, arg).ToLowerInvariant();
+                    if (options.Place is not ("in-person" or "online" or "either"))
+                        throw new ArgumentsException($"argument --place: invalid choice: '{options.Place}' (choose from 'in-person', 'online', 'either')");
+                    break;
+                case (true, "--json") when slots:
+                    options.Format = "json";
+                    break;
+                case (true, "--to" or "--days" or "--out") when slots:
+                    throw new ArgumentsException($"unrecognized arguments: {arg} (slots takes --from, --by and --until, and only prints)");
                 case (true, "--ring") when contacts:
                     options.Ring = Value(name, ref i, arg);
                     break;
@@ -327,8 +402,8 @@ public static class Cli
                     break;
                 case (true, "--format"):
                     options.Format = Value(name, ref i, arg).ToLowerInvariant();
-                    if (!(summary || contacts ? Formats[..2] : Formats).Contains(options.Format))
-                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary || contacts ? "" : ", 'csv'")})");
+                    if (!(summary || contacts || slots ? Formats[..2] : Formats).Contains(options.Format))
+                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary || contacts || slots ? "" : ", 'csv'")})");
                     break;
                 case (true, "--weeks") when summary:
                     var w = Value(name, ref i, arg);
@@ -366,6 +441,8 @@ public static class Cli
             throw new ArgumentsException("argument --weeks: not allowed with argument --to or --days");
         if (options.Command == "who" && options.People.Count == 0)
             throw new ArgumentsException("the following arguments are required: people");
+        if (options.Command == "slots" && options.People.Count == 0)
+            throw new ArgumentsException("the following arguments are required: people (who the meeting is with)");
         if (options.Command is "config" or "sign-in" or "groups" && options.People.Count > 0)
             throw new ArgumentsException($"unrecognized arguments: {string.Join(" ", options.People)}");
         return options;

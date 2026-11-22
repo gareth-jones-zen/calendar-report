@@ -44,11 +44,21 @@ public sealed partial class Config
         "\n" +
         "# Names for lists of people, to use in place of addresses: calendar-report events team\n" +
         "# [groups]\n" +
-        "# team = [\"ann@example.com\", \"bob@example.com\"]\n";
+        "# team = [\"ann@example.com\", \"bob@example.com\"]\n" +
+        "\n" +
+        "# How `slots` finds times for a meeting with several people (see the README, \"Slots\"); its labels are the\n" +
+        "# rule list [[rules.slots]] (a built-in list is used without one).\n" +
+        "# [slots]\n" +
+        "# hours = \"09:00-17:00\"      # candidates start and end within these\n" +
+        "# lunch = \"12:00-13:30\"      # a candidate over lunch counts as soft\n" +
+        "# step_minutes = 30\n" +
+        "# max_candidates = 15\n" +
+        "# per_day = 3                 # at most this many candidates from one day\n" +
+        "# past_by_days = 5            # working days past --by that candidates may go to, marked\n";
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -66,6 +76,13 @@ public sealed partial class Config
 
     /// <summary>[contacts]: who `contacts` checks, and how often (0.5.0).</summary>
     public ContactSettings Contacts { get; init; } = new();
+
+    /// <summary>[slots]: how `slots` finds and sorts candidate times (0.7.0).</summary>
+    public SlotSettings Slots { get; init; } = new();
+
+    /// <summary>[leave]: what counts as leave and a bank holiday, the rules the calendar tools share (background-tools-lib
+    /// CalendarDays; a base file's [leave] fills it in). Used by `slots` (0.7.0).</summary>
+    public CalendarDays.LeaveSettings Leave { get; init; } = new();
 
     /// <summary>The real environment; an empty name is no variable.</summary>
     public static string? Environment(string name) =>
@@ -177,7 +194,25 @@ public sealed partial class Config
             Groups = groups,
             Summary = SummarySettings.Parse(raw, full, groups),
             Contacts = ContactSettings.Parse(raw, full, MonthsAhead(raw, full)),
+            Slots = SlotSettings.Parse(raw, full),
+            Leave = ReadLeave(raw, full),
         };
+    }
+
+    private static CalendarDays.LeaveSettings ReadLeave(TomlTable raw, string full)
+    {
+        if (!raw.TryGetValue("leave", out var value))
+            return new();
+        if (value is not TomlTable table)
+            throw new UsageException($"{full}: [leave] should be a table.");
+        try
+        {
+            return CalendarDays.LeaveSettings.Parse(table, full);
+        }
+        catch (FormatException error)
+        {
+            throw new UsageException(error.Message);
+        }
     }
 
     /// <summary>calendar_months_ahead (0.6.0): how far ahead to look, in calendar months, for a tool that manages the

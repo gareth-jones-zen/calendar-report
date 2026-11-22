@@ -85,6 +85,37 @@ public sealed class RuleContext(ISource source, Config config)
         return (rules.Count, null);
     }
 
+    private string? owner;
+
+    /// <summary>The owner: the signed-in user (0.7.0), lower case.</summary>
+    public string Owner => owner ??= source.MyAddress().ToLowerInvariant();
+
+    /// <summary>The organisation's domain, for <c>external</c>: [slots] org_domain, or the owner's own.</summary>
+    public string OrgDomain => config.Slots.OrgDomain?.ToLowerInvariant() ?? (Owner.Contains('@') ? Owner[(Owner.IndexOf('@') + 1)..] : "");
+
+    /// <summary>Whether anyone invited (rooms aside), or the organiser, is outside the organisation.</summary>
+    public bool IsExternal(Event e)
+    {
+        var domain = OrgDomain;
+        if (domain.Length == 0)
+            return false;
+        bool Outside(string? address) => address is { } a && a.Contains('@')
+            && !a[(a.IndexOf('@') + 1)..].Equals(domain, StringComparison.OrdinalIgnoreCase)
+            && !a.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
+        return Outside(e.OrganizerAddress) || (e.Invitees ?? []).Any(a => a.Type != "resource" && Outside(a.Address));
+    }
+
+    /// <summary>The person's own response to an event, in the rules' words: accepted, tentative, none, organiser or
+    /// declined.</summary>
+    public static string ResponseOf(Event e) => (e.Response ?? "none").ToLowerInvariant() switch
+    {
+        "accepted" => "accepted",
+        "tentativelyaccepted" or "tentative" => "tentative",
+        "organizer" or "organiser" => "organiser",
+        "declined" => "declined",
+        _ => "none",
+    };
+
     private bool Matches(Rule r, Event e, Person person, string self, string organizer, HashSet<string> others)
     {
         var minutes = (e.End - e.Start).TotalMinutes;
@@ -105,9 +136,22 @@ public sealed class RuleContext(ISource source, Config config)
             if (others.Count != 1)
                 return false;
             var other = others.Single();
-            if (with == "manager" ? other != Manager(person) : !Group(with).Contains(other))
+            var match = with switch
+            {
+                "manager" => other == Manager(person),
+                "owner" => other == Owner,
+                _ => Group(with).Contains(other),
+            };
+            if (!match)
                 return false;
         }
+        if (r.OwnerOrganizes is { } organizes && organizes != ((organizer.Length == 0 ? self : organizer) == Owner)) return false;
+        if (r.OwnerAttends is { } attends
+            && attends != (self == Owner || organizer == Owner || (e.Invitees ?? []).Any(a => string.Equals(a.Address, Owner, StringComparison.OrdinalIgnoreCase))))
+            return false;
+        if (r.External is { } external && external != IsExternal(e)) return false;
+        if (r.Recurring is { } recurring && recurring != (e.SeriesMasterId is not null || e.Type is "occurrence" or "exception")) return false;
+        if (r.Response is { } responses && !responses.Contains(ResponseOf(e))) return false;
         if (r.Mostly is { } mostly)
         {
             if (others.Count < 2)

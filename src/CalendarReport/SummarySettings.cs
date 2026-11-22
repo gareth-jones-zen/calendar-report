@@ -29,6 +29,16 @@ public sealed class Rule
     public int? MaxMinutes { get; init; }
     public TimeSpan? StartsFrom { get; init; }
     public TimeSpan? StartsTo { get; init; }
+
+    // 0.7.0, for `slots`: what a busy time is (fixed, soft or movable) and why, and the tests about the owner (the signed-in
+    // user), outside attendees, recurrence and the person's own response.
+    public string? Label { get; init; }
+    public string? Why { get; init; }
+    public bool? OwnerOrganizes { get; init; }
+    public bool? OwnerAttends { get; init; }
+    public bool? External { get; init; }
+    public bool? Recurring { get; init; }
+    public IReadOnlyList<string>? Response { get; init; }
 }
 
 /// <summary>A named way of summarising: which rule list, for whom, and how much detail.</summary>
@@ -40,6 +50,8 @@ public sealed partial class SummarySettings
 {
     public static readonly string[] Depths = ["groups", "buckets", "events"];
     public static readonly string[] Counts = ["skip", "leave", "not-working"];
+    public static readonly string[] Labels = ["fixed", "soft", "movable"];
+    public static readonly string[] Responses = ["accepted", "tentative", "none", "organiser", "declined"];
 
     private static readonly string[] SummaryKeys =
         ["default_view", "free_bands", "tentative", "round_up_to", "work_week_hours", "work_week", "order"];
@@ -50,7 +62,7 @@ public sealed partial class SummarySettings
     [
         "use", "group", "bucket", "count", "subject", "not_subject", "category", "organizer", "organizer_title",
         "one_to_one_with", "mostly", "own_block", "private", "show_as", "min_attendees", "min_hours", "max_minutes",
-        "starts_between",
+        "starts_between", "label", "why", "owner_organizes", "owner_attends", "external", "recurring", "response",
     ];
 
     public string DefaultView { get; init; } = "default";
@@ -191,11 +203,29 @@ public sealed partial class SummarySettings
             if (count is not null && !Counts.Contains(count))
                 throw Bad($"{where} count should be one of {string.Join(", ", Counts.Select(c => $"\"{c}\""))}.");
             var group = Text("group");
-            if (count is null == group is null)
-                throw Bad($"{where} needs a group (and bucket), or a count, but not both.");
+            var label = Text("label");
+            if (label is not null && !Labels.Contains(label))
+                throw Bad($"{where} label should be one of {string.Join(", ", Labels.Select(c => $"\"{c}\""))}.");
+            if (new[] { group, count, label }.Count(x => x is not null) != 1)
+                throw Bad($"{where} needs a group (and bucket), a count or a label (for `slots`), and only one of them.");
+            if (Text("why") is not null && label is null)
+                throw Bad($"{where} why goes with a label (a `slots` rule).");
             foreach (var key in new[] { "one_to_one_with", "mostly" })
-                if (Text(key) is { } g && !(key == "one_to_one_with" && g == "manager") && !groups.ContainsKey(g))
+                if (Text(key) is { } g && !(key == "one_to_one_with" && g is "manager" or "owner") && !groups.ContainsKey(g))
                     throw Bad($"{where} {key}: there's no group '{g}' in [groups].");
+            IReadOnlyList<string>? responses = null;
+            if (rule.TryGetValue("response", out var rv))
+            {
+                responses = rv switch
+                {
+                    string one => [one],
+                    TomlArray many when many.Count > 0 && many.All(x => x is string) => many.Select(x => (string)x!).ToList(),
+                    _ => throw Bad($"{where} response should be a response or a list of them."),
+                };
+                foreach (var answer in responses)
+                    if (!Responses.Contains(answer))
+                        throw Bad($"{where} response '{answer}' should be one of {string.Join(", ", Responses.Select(c => $"\"{c}\""))}.");
+            }
             TimeSpan? from = null, to = null;
             if (Text("starts_between") is { } between)
             {
@@ -214,6 +244,9 @@ public sealed partial class SummarySettings
                 MinHours = rule.TryGetValue("min_hours", out var mh) ? Number(mh, $"{where} min_hours") : null,
                 MaxMinutes = rule.TryGetValue("max_minutes", out var mm) ? Whole(mm, $"{where} max_minutes") : null,
                 StartsFrom = from, StartsTo = to,
+                Label = label, Why = Text("why"),
+                OwnerOrganizes = Flag("owner_organizes"), OwnerAttends = Flag("owner_attends"), External = Flag("external"),
+                Recurring = Flag("recurring"), Response = responses,
             };
         }
 
@@ -253,6 +286,8 @@ public sealed partial class SummarySettings
                 var rules = view.TryGetValue("rules", out var vr) ? Str(vr, $"{where}.rules") : "default";
                 if (!expanded.ContainsKey(rules))
                     throw Bad($"{where}.rules: there's no rule list '{rules}' ([[rules.{rules}]]).");
+                if (expanded[rules].FirstOrDefault(x => x.Label is not null) is { } labelled)
+                    throw Bad($"{where}.rules: '{rules}' has a label rule ({labelled.Where}), which is for `slots`, not a summary.");
                 var depth = view.TryGetValue("depth", out var d) ? Str(d, $"{where}.depth") : "groups";
                 if (!Depths.Contains(depth))
                     throw Bad($"{where}.depth should be one of {string.Join(", ", Depths.Select(x => $"\"{x}\""))}.");

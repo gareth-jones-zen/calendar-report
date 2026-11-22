@@ -42,6 +42,7 @@ calendar-report events [PEOPLE...] --work-plan  ...with each day's work plan
 calendar-report work-plan [PEOPLE...]           where they're working each day
 calendar-report summary [PEOPLE...]             where their time went, by week (see Summaries)
 calendar-report contacts [PEOPLE...]            when you last met, and next meet, the people in your rings (see Contacts)
+calendar-report slots PEOPLE... --minutes N     times for a meeting with them, and what's in the way (see Slots)
 calendar-report who PEOPLE...                   who those words mean
 calendar-report groups                          the groups in the settings
 calendar-report config                          create the settings file and say where it is
@@ -264,6 +265,115 @@ Someone named in two rings is in the first. **JSON** has `asOf`, the range, and 
 
 **Notes about people are personal data.** A `why` line is about the work, never a judgement of the person: write it
 as if they might read it.
+
+## Slots
+
+`slots` (0.7.0) finds times for a meeting with several people, and doesn't stop at "everyone's free". For each
+candidate time it shows, per person, **what's in the way, labelled `fixed`, `soft` or `movable`**, with why: your own
+blocked time and a 1:1 with you can be moved, a sprint ceremony or a meeting they're tentative on might be gone
+over, an outside meeting can't. It's the data for deciding (a person, or a tool such as an assistant, weighs the
+options); it only reads, and **it only prints**: nothing about anyone's calendar is written to disk.
+
+```
+calendar-report slots ann@example.com "Bob Jones" --minutes 45 --by 2026-12-04
+calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --place in-person --json
+```
+
+| Option | |
+|---|---|
+| `PEOPLE` | Who the meeting is with (names, addresses, groups). **You're always included**, as essential |
+| `--minutes N` | How long (required) |
+| `--optional PEOPLE` | People who'd be good to have but aren't essential (repeat it, or use commas) |
+| `--from DATE` | The first day (default tomorrow) |
+| `--by DATE` | When you'd like it by: a **preference**. Default 10 working days after `--from` |
+| `--until DATE` | The last day looked at; candidates after `--by` are marked. Default `past_by_days` working days after `--by` |
+| `--place P` | `in-person`, `online` or `either` (default): in-person puts your office days (your work plan) first |
+| `--max N` | How many candidates (default `max_candidates`) |
+| `--format table\|json`, `--json` | The table, or JSON |
+
+**How the candidates are found:**
+
+- Every start time on a grid (`step_minutes`) within `hours` on weekdays from `--from` to `--until`, the meeting
+  ending within `hours` too; none in the past.
+- **Your leave and bank holidays** (the shared `[leave]` rules, below) have no candidates; on a half day's leave,
+  only the other half. Anyone else's leave or bank holiday is a fixed item for them.
+- For each person, every event overlapping the time is **labelled by the first rule it meets** in the rule list
+  `[slots] rules` (default `slots`; the built-in list below when the settings have none). A rule with `count =
+  "skip"` (free time) isn't in the way, `"not-working"` (lunch, travel) is soft and `"leave"` fixed; an event no rule
+  meets is **fixed** ("someone else's meeting"). A meeting they declined isn't in the way.
+- **No details visible** (their sharing shows only free/busy, so no subject): busy is fixed, tentative is soft.
+- **The sift:** a time where anyone essential has something fixed is dropped (the count is shown). The rest are
+  sorted: those where what's in the way is movable before soft; fewer people affected; inside `--by` before after it;
+  fewer optional people unable to come; fewer soft items; your office days first for in-person; then earliest.
+  `lunch` makes a time over lunch count as soft. At most `per_day` from one day, so the options spread out.
+
+**The built-in labels** (used when the settings have no `[[rules.slots]]`), first match wins:
+
+| Label | When | Why |
+|---|---|---|
+| (not in the way) | shown as free | |
+| fixed | shown as out of office | away |
+| fixed | anyone outside the organisation (`external`) | an outside organisation's diary |
+| movable | a 1:1 with you (`one_to_one_with = "owner"`) | |
+| movable | you organised it (`owner_organizes`) | your team meetings, your own blocks |
+| soft | a sprint ceremony: stand-up, daily scrum, (backlog) refinement, sprint planning, sprint review, retro | might be gone over |
+| soft | they're tentative (`response = "tentative"`) | |
+| soft | their own blocked time (`own_block`) | |
+| soft | 12 or more invited (`min_attendees`) | one of many |
+| fixed | anything else | someone else's meeting |
+
+**Your own rules** replace the built-in list: a `[[rules.slots]]` list with the same tests as a summary's rules (and
+`use` to borrow another list), where each rule has a **`label`** (`fixed`, `soft` or `movable`) and a **`why`**
+instead of a group or count. Senior meetings that never move go near the top, for example:
+
+```toml
+[[rules.slots]]
+show_as = "free"
+count = "skip"
+[[rules.slots]]
+organizer = '^(Jane Director|Board)$'     # or organizer_title = '\b(Director|Chief)\b'
+label = "fixed"
+why = "a senior meeting"
+[[rules.slots]]
+one_to_one_with = "owner"
+label = "movable"
+why = "a 1:1 with you"
+```
+
+**The rule tests added for `slots`** (usable in any rule list):
+
+| Test | Holds when |
+|---|---|
+| `one_to_one_with = "owner"` | It's a 1:1 between the person and you (as well as a group, or `"manager"`) |
+| `owner_organizes` | `true`: you organised it (your own blocks included); `false`: not |
+| `owner_attends` | `true`: you're in it (organiser or invited); `false`: not |
+| `external` | `true`: someone invited (rooms aside), or the organiser, is outside the organisation (`org_domain`, by default your own address's domain) |
+| `recurring` | `true`: an occurrence of a recurring meeting; `false`: a one-off |
+| `response` | The person's own response is one of these: `accepted`, `tentative`, `none`, `organiser`, `declined` (one, or a list) |
+
+A label rule can't be in a list a summary view uses (it has no group), and a summary rule's `why` is refused.
+
+```toml
+[slots]
+hours = "09:00-17:00"     # candidates within these (default)
+lunch = "12:00-13:30"     # a time over lunch is soft (default: none)
+step_minutes = 30         # the grid (default)
+max_candidates = 15       # default
+per_day = 3               # at most this many from one day (default)
+past_by_days = 5          # working days past --by that --until defaults to (default)
+rules = "slots"           # the rule list (default)
+org_domain = "example.com"   # for external (default: your own address's domain)
+```
+
+**`[leave]`** is the shared leave settings (background-tools-lib's CalendarDays: `subjects`, `categories`,
+`min_hours`, `half_day`, `bank_holiday_subjects`, `bank_holiday_categories`); a base file's `[leave]` fills it in
+when this file has a `[leave]` section. Without one, the library's defaults are used.
+
+**JSON:** `minutes`, `from`, `by`, `until`, `place`, `timeZone`, `people` (`name`, `address`, `essential`),
+`considered`, `ruledOut`, `notes`, and `candidates`: each with `start`, `end`, `pastBy`, `ownerLocation` (your work
+plan: `office`, `remote`, `timeOff`, or null), `lunch`, `people` (`name`, `address`, `essential`, `readable`,
+`free`, `items`: `subject` (null when not visible), `start`, `end`, `label`, `why`, `rule`, `detailsVisible`) and
+`gives` (a line for each thing in the way).
 
 ## What it reads
 
