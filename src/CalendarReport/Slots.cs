@@ -330,6 +330,8 @@ public static class Slots
                 items.Add(new SlotItem(e.Subject, e.Start, e.End, "soft", "not working time (lunch, travel)", rule.Where, true));
             else if (rule.Count == "leave")
                 items.Add(new SlotItem(e.Subject, e.Start, e.End, "fixed", "leave", rule.Where, true));
+            else if (rule.Count is null)   // a summary rule (a group) from a borrowed list: no label, so as unmatched
+                items.Add(new SlotItem(e.Subject, e.Start, e.End, "fixed", "someone else's meeting (no label for it)", rule.Where, true));
             // count = "skip": not in the way (free time)
         }
         return new SlotPerson(person, essential, true, items);

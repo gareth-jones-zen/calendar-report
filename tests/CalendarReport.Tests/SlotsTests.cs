@@ -216,6 +216,22 @@ public sealed class SlotsTests : IDisposable
     }
 
     [Fact]
+    public void A_borrowed_summary_rule_with_a_group_is_fixed_not_free()
+    {
+        var config = Settings("""
+            [slots]
+            per_day = 50
+            [[rules.common]]
+            subject = 'sprint review'
+            group = "Ceremonies"
+            [[rules.slots]]
+            use = "common"
+            """);
+        var report = Build(config);
+        Assert.DoesNotContain(report.Candidates, c => c.Start == DateTime.Parse("2026-11-23T14:00"));
+    }
+
+    [Fact]
     public void Org_domain_decides_whats_external()
     {
         Assert.Contains(Build(Settings(AllOfThem)).Candidates, c => c.Start == DateTime.Parse("2026-11-23T10:00"));
