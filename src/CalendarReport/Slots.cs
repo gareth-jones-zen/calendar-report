@@ -19,7 +19,7 @@ public sealed partial class SlotSettings
     public TimeSpan HoursTo { get; init; } = TimeSpan.FromHours(17);
     public TimeSpan? LunchFrom { get; init; }
     public TimeSpan? LunchTo { get; init; }
-    public int StepMinutes { get; init; } = 30;
+    public int StepMinutes { get; init; } = 15;
     public int MaxCandidates { get; init; } = 15;
     public int PerDay { get; init; } = 3;
     public int PastByDays { get; init; } = 5;
@@ -95,7 +95,7 @@ public sealed partial class SlotSettings
             HoursTo = hours?.To ?? TimeSpan.FromHours(17),
             LunchFrom = lunch?.From,
             LunchTo = lunch?.To,
-            StepMinutes = Whole("step_minutes", 30, 5, 240),
+            StepMinutes = Whole("step_minutes", 15, 5, 240),
             MaxCandidates = Whole("max_candidates", 15, 1, 100),
             PerDay = Whole("per_day", 3, 1, 50),
             PastByDays = Whole("past_by_days", 5, 0, 30),
@@ -107,14 +107,15 @@ public sealed partial class SlotSettings
 /// <summary>What `slots` was asked for: the people (the owner always among the essential), how long, and when.</summary>
 public sealed record SlotRequest(
     IReadOnlyList<Person> Essential, IReadOnlyList<Person> Optional, int Minutes, DateTime From, DateTime By,
-    DateTime Until, string Place, int MaxCandidates);
+    DateTime Until, string Place, int MaxCandidates, string? Topic = null);
 
 /// <summary>Something in the way for one person at a candidate time: its subject (when visible), its time, how
 /// easily it gives (fixed, soft or movable) and why, and which rule said so.</summary>
 public sealed record SlotItem(string? Subject, DateTime Start, DateTime End, string Label, string Why, string Rule, bool DetailsVisible);
 
-/// <summary>One person at a candidate time: what's in the way (nothing: free), or that their calendar can't be read.</summary>
-public sealed record SlotPerson(Person Person, bool Essential, bool Readable, IReadOnlyList<SlotItem> Items)
+/// <summary>One person at a candidate time: what's in the way (nothing: free), or that their calendar can't be read
+/// even as free/busy. TitlesOnly (0.8.0): read through free/busy, so who's invited and their responses aren't known.</summary>
+public sealed record SlotPerson(Person Person, bool Essential, bool Readable, IReadOnlyList<SlotItem> Items, bool TitlesOnly = false)
 {
     public bool Free => Readable && Items.Count == 0;
 
@@ -122,8 +123,10 @@ public sealed record SlotPerson(Person Person, bool Essential, bool Readable, IR
     public int Worst => Items.Count == 0 ? 0 : Items.Max(i => Slots.Rank(i.Label));
 }
 
+/// <summary>A candidate time. LatestStart (0.8.0): adjacent starts with exactly the same things in the way are one
+/// candidate, Start being the earliest of them and LatestStart the last (null when there's only one).</summary>
 public sealed record SlotCandidate(DateTime Start, DateTime End, bool PastBy, string? OwnerLocation, bool Lunch,
-    IReadOnlyList<SlotPerson> People)
+    IReadOnlyList<SlotPerson> People, DateTime? LatestStart = null)
 {
     /// <summary>What would have to give, a line each.</summary>
     public IReadOnlyList<string> Gives =>
@@ -134,8 +137,13 @@ public sealed record SlotCandidate(DateTime Start, DateTime End, bool PastBy, st
         ];
 }
 
+/// <summary>A meeting already in someone's calendar whose subject shares the --topic's words (0.8.0): who of the
+/// people asked about has it, and its organiser where known. Listed, never a candidate.</summary>
+public sealed record RelatedMeeting(string Subject, DateTime Start, DateTime End, string? Organizer, IReadOnlyList<string> People);
+
 public sealed record SlotsReport(SlotRequest Request, string TimeZone, int Considered, int RuledOut,
-    IReadOnlyList<SlotCandidate> Candidates, IReadOnlyList<string> Notes);
+    IReadOnlyList<SlotCandidate> Candidates, IReadOnlyList<string> Notes, IReadOnlyList<RelatedMeeting>? Related = null,
+    IReadOnlyList<string>? TitlesOnly = null);
 
 /// <summary>`slots`: candidate times for a meeting with several people, and for each person what's in the way,
 /// labelled fixed, soft or movable by rules (0.7.0; assistant/designs/meeting-slots). It only reads, and only prints:
@@ -183,16 +191,24 @@ public static class Slots
         var everyone = request.Essential.Select(p => (Person: p, Essential: true))
             .Concat(request.Optional.Select(p => (Person: p, Essential: false))).ToList();
         var calendars = new Dictionary<string, IReadOnlyList<Event>?>(StringComparer.OrdinalIgnoreCase);
+        var titlesOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (person, _) in everyone)
         {
             try
             {
-                calendars[person.Address] = source.Events(person, from, to).Where(e => !e.Cancelled).ToList();
+                var read = CalendarReads.Read(source, person, from, to);
+                calendars[person.Address] = read.Events.Where(e => !e.Cancelled).ToList();
+                if (read.FreeBusyOnly)
+                {
+                    titlesOnly.Add(person.Address);
+                    notes.Add($"{person.Name}: titles only (free/busy), as Outlook shows their calendar; who's invited and "
+                              + "their responses aren't visible, so rules about those don't apply.");
+                }
             }
             catch (M365Graph.GraphRequestException error) when ((int)error.Status is 403 or 404)
             {
                 calendars[person.Address] = null;
-                notes.Add($"{person.Name}'s calendar can't be read (is it shared with you?): shown as not visible.");
+                notes.Add($"{person.Name}: neither their calendar nor their free/busy can be read: shown as not visible.");
             }
         }
         var me = request.Essential[0];
@@ -242,7 +258,8 @@ public static class Slots
                 var end = start.AddMinutes(request.Minutes);
                 considered++;
                 var people = everyone.Select(p => Person(p.Person, p.Essential, start, end, dayOffs[p.Person.Address],
-                    calendars[p.Person.Address], rules, context, p.Person == me ? plan : null)).ToList();
+                    calendars[p.Person.Address], rules, context, p.Person == me ? plan : null)
+                    with { TitlesOnly = titlesOnly.Contains(p.Person.Address) }).ToList();
                 if (people.Any(p => p.Essential && p.Worst == 3))
                 {
                     ruledOut++;
@@ -257,7 +274,7 @@ public static class Slots
             notes.Insert(0, $"No candidates on {string.Join(", ", skippedDays)}.");
 
         var inPerson = request.Place == "in-person";
-        var sorted = kept
+        var sorted = Collapse(kept, settings.StepMinutes)
             .OrderBy(c => Math.Max(c.People.Where(p => p.Essential).Select(p => p.Worst).DefaultIfEmpty(0).Max(), c.Lunch ? 2 : 0))
             .ThenBy(c => c.People.Count(p => p.Essential && p.Items.Count > 0))
             .ThenBy(c => c.PastBy)
@@ -278,7 +295,90 @@ public static class Slots
             perDay[c.Start.Date] = n + 1;
             chosen.Add(c);
         }
-        return new SlotsReport(request, config.TimeZone.Id, considered, ruledOut, chosen, notes);
+        var related = request.Topic is { } topic ? Related(topic, everyone.Select(p => p.Person), calendars) : null;
+        return new SlotsReport(request, config.TimeZone.Id, considered, ruledOut, chosen, notes, related,
+            [.. everyone.Where(p => titlesOnly.Contains(p.Person.Address)).Select(p => p.Person.Name)]);
+    }
+
+    /// <summary>Adjacent starts on a day (a step apart) with exactly the same things in the way, the same lunch and
+    /// by-date marks, become one candidate from the first start to the last (LatestStart): a 15-minute grid otherwise
+    /// fills the list with near-copies.</summary>
+    internal static List<SlotCandidate> Collapse(IReadOnlyList<SlotCandidate> candidates, int stepMinutes)
+    {
+        static string Key(SlotCandidate c) => string.Join("|",
+            [c.Lunch.ToString(), c.PastBy.ToString(), c.OwnerLocation ?? "",
+             .. c.People.Select(p => p.Person.Address + ":" + p.Readable + ":" + string.Join(",",
+                 p.Items.Select(i => $"{i.Subject}@{i.Start:yyyyMMddHHmm}-{i.End:yyyyMMddHHmm}={i.Label}")))]);
+        var result = new List<SlotCandidate>();
+        SlotCandidate? run = null;
+        string? runKey = null;
+        DateTime last = default;
+        foreach (var c in candidates.OrderBy(c => c.Start))
+        {
+            var key = Key(c);
+            if (run is not null && key == runKey && c.Start.Date == run.Start.Date && c.Start == last.AddMinutes(stepMinutes))
+            {
+                last = c.Start;
+                run = run with { LatestStart = last };
+                continue;
+            }
+            if (run is not null)
+                result.Add(run);
+            run = c;
+            runKey = key;
+            last = c.Start;
+        }
+        if (run is not null)
+            result.Add(run);
+        return result;
+    }
+
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "and", "the", "of", "in", "on", "for", "to", "with", "about", "at", "by", "from", "into", "re", "its", "it",
+        "is", "be", "our", "we", "discuss", "discussion", "meeting", "catch", "up", "call", "chat", "sync", "review",
+    };
+
+    /// <summary>The topic's significant words, lower case: stopwords dropped, except a word written in capitals
+    /// ("ITS"), which is kept as an acronym.</summary>
+    internal static List<string> TopicWords(string topic) =>
+        System.Text.RegularExpressions.Regex.Split(topic, @"[^\p{L}\p{N}]+")
+            .Where(w => w.Length > 0 && (w.Length > 1 && w.All(c => !char.IsLetter(c) || char.IsUpper(c)) || !StopWords.Contains(w)))
+            .Select(w => w.ToLowerInvariant()).Distinct().ToList();
+
+    /// <summary>Whether a subject shares at least half of the topic's significant words (at least one). A short word
+    /// (four letters or fewer) must be a word of the subject; a longer one may also run across the subject's words
+    /// ("FibreHub" matches "Fibre Hub").</summary>
+    internal static bool SharesTopic(string subject, IReadOnlyList<string> words)
+    {
+        if (words.Count == 0 || string.IsNullOrWhiteSpace(subject))
+            return false;
+        var tokens = System.Text.RegularExpressions.Regex.Split(subject.ToLowerInvariant(), @"[^\p{L}\p{N}]+").Where(t => t.Length > 0).ToList();
+        var joined = string.Concat(tokens);
+        var hits = words.Count(w => tokens.Contains(w) || (w.Length > 4 && joined.Contains(w, StringComparison.Ordinal)));
+        return hits >= Math.Max(1, (words.Count + 1) / 2);
+    }
+
+    internal static List<RelatedMeeting> Related(string topic, IEnumerable<Person> people,
+        IReadOnlyDictionary<string, IReadOnlyList<Event>?> calendars)
+    {
+        var words = TopicWords(topic);
+        var found = new Dictionary<(string, DateTime, DateTime), (string? Organizer, List<string> People)>();
+        foreach (var person in people)
+        {
+            foreach (var e in calendars.GetValueOrDefault(person.Address) ?? [])
+            {
+                if (!SharesTopic(e.Subject, words))
+                    continue;
+                var key = (e.Subject, e.Start, e.End);
+                if (!found.TryGetValue(key, out var entry))
+                    found[key] = entry = (e.Organizer, []);
+                else if (entry.Organizer is null && e.Organizer is not null)
+                    found[key] = entry = (e.Organizer, entry.People);
+                entry.People.Add(person.Name);
+            }
+        }
+        return [.. found.OrderBy(f => f.Key.Item2).Select(f => new RelatedMeeting(f.Key.Item1, f.Key.Item2, f.Key.Item3, f.Value.Organizer, f.Value.People))];
     }
 
     private static SlotPerson Person(Person person, bool essential, DateTime start, DateTime end, DayOff dayOff,
@@ -322,7 +422,13 @@ public static class Slots
                 continue;
             }
             var (_, rule) = context.Classify(e, rules, person);
-            if (rule is null)
+            if (rule is null && e.FreeBusy)   // titles only: no organiser or response to judge by, so its show-as
+            {
+                var soft = e.ShowAs.Equals("tentative", StringComparison.OrdinalIgnoreCase);
+                items.Add(new SlotItem(e.Subject, e.Start, e.End, soft ? "soft" : "fixed",
+                    soft ? "shown as tentative (titles only)" : "someone else's meeting (titles only)", "free/busy", true));
+            }
+            else if (rule is null)
                 items.Add(new SlotItem(e.Subject, e.Start, e.End, "fixed", "someone else's meeting (no rule matched)", "none", true));
             else if (rule.Label is { } label)
                 items.Add(new SlotItem(e.Subject, e.Start, e.End, label, rule.Why ?? label, rule.Where, true));
@@ -357,10 +463,21 @@ public static class Slots
             ["considered"] = report.Considered,
             ["ruledOut"] = report.RuledOut,
             ["notes"] = new JsonArray([.. report.Notes.Select(n => (JsonNode)JsonValue.Create(n))]),
+            ["titlesOnly"] = new JsonArray([.. (report.TitlesOnly ?? []).Select(n => (JsonNode)JsonValue.Create(n))]),
+            ["topic"] = r.Topic,
+            ["related"] = report.Related is null ? null : new JsonArray([.. report.Related.Select(m => (JsonNode)new JsonObject
+            {
+                ["subject"] = m.Subject,
+                ["start"] = Time(m.Start),
+                ["end"] = Time(m.End),
+                ["organizer"] = m.Organizer,
+                ["people"] = new JsonArray([.. m.People.Select(p => (JsonNode)JsonValue.Create(p))]),
+            })]),
             ["candidates"] = new JsonArray([.. report.Candidates.Select(c => (JsonNode)new JsonObject
             {
                 ["start"] = Time(c.Start),
                 ["end"] = Time(c.End),
+                ["latestStart"] = c.LatestStart is { } latest ? Time(latest) : null,
                 ["pastBy"] = c.PastBy,
                 ["ownerLocation"] = c.OwnerLocation,
                 ["lunch"] = c.Lunch,
@@ -370,6 +487,7 @@ public static class Slots
                     ["address"] = p.Person.Address,
                     ["essential"] = p.Essential,
                     ["readable"] = p.Readable,
+                    ["titlesOnly"] = p.TitlesOnly,
                     ["free"] = p.Free,
                     ["items"] = new JsonArray([.. p.Items.Select(i => (JsonNode)new JsonObject
                     {
@@ -405,6 +523,8 @@ public static class Slots
         foreach (var c in report.Candidates)
         {
             b.Append('\n').Append(En, $"{++n}. {c.Start:ddd d MMM HH:mm}-{c.End:HH:mm}");
+            if (c.LatestStart is { } latestStart)
+                b.Append(En, $" (or start up to {latestStart:HH:mm})");
             if (c.OwnerLocation is { } where)
                 b.Append(En, $"  you: {where}");
             if (c.PastBy)
@@ -414,9 +534,9 @@ public static class Slots
             b.Append('\n');
             foreach (var p in c.People)
             {
-                b.Append(En, $"   {p.Person.Name}{(p.Essential ? "" : " (optional)")}: ");
+                b.Append(En, $"   {p.Person.Name}{(p.Essential ? "" : " (optional)")}{(p.TitlesOnly ? " [titles only]" : "")}: ");
                 if (!p.Readable)
-                    b.Append("calendar not visible\n");
+                    b.Append("not visible (neither calendar nor free/busy)\n");
                 else if (p.Items.Count == 0)
                     b.Append("free\n");
                 else
@@ -426,6 +546,20 @@ public static class Slots
         }
         if (report.Candidates.Count == 0)
             b.Append("\nNo time works without moving a fixed meeting for someone essential: try a later --until, or make someone optional.\n");
+        if (report.Related is { } related)
+        {
+            b.Append(En, $"\nRelated meetings (\"{r.Topic}\"): ");
+            if (related.Count == 0)
+                b.Append("none found.\n");
+            else
+            {
+                b.Append('\n');
+                foreach (var m in related)
+                    b.Append(En, $"  {m.Start:ddd d MMM HH:mm}-{m.End:HH:mm}  {m.Subject}")
+                        .Append(m.Organizer is { } org ? $"  (organiser {org})" : "")
+                        .Append(En, $"  in: {string.Join(", ", m.People)}\n");
+            }
+        }
         return b.ToString();
     }
 }

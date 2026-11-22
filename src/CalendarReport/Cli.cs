@@ -72,6 +72,7 @@ public static class Cli
         "    --until DATE       the last day looked at (default [slots] past_by_days working days after --by)\n" +
         "    --place P          in-person, online or either (default either): in-person puts your office days first\n" +
         "    --max N            how many candidates (default [slots] max_candidates)\n" +
+        "    --topic WORDS      also list meetings already in anyone's calendar whose subject shares these words\n" +
         "    --format F         table (default) or json; --json is the same as --format json\n\n" +
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
@@ -92,7 +93,7 @@ public static class Cli
         public string? From, To, Out, View, Depth, Ring;
         public int? Days, Weeks;
         public List<string> Optional = [];
-        public string? By, Until, Place;
+        public string? By, Until, Place, Topic;
         public int? Minutes, Max;
         public string Format = "table";
         public bool WorkPlan, Cancelled, Flagged;
@@ -205,7 +206,7 @@ public static class Cli
         }
         catch (GraphRequestException error) when ((int)error.Status is 403 or 404)
         {
-            host.Err.WriteLine($"Microsoft 365 refused: {error.Message} (is their calendar shared with you?)");
+            host.Err.WriteLine($"Microsoft 365 refused: {error.Message} (neither their calendar nor their free/busy can be read)");
             return 1;
         }
         catch (Exception error)
@@ -228,7 +229,7 @@ public static class Cli
         var (from, to) = Range(options, today);
         var rules = settings.Rules[view.Rules];
         var context = new RuleContext(source, config);
-        var summaries = people.Select(p => Summaries.Summarise(p, source.Events(p, from, to), settings, rules, context, from, to)).ToList();
+        var summaries = people.Select(p => Summaries.Summarise(p, CalendarReads.Read(source, p, from, to).Events, settings, rules, context, from, to)).ToList();
         var report = new SummaryReport(from, to, config.TimeZone.Id, view, options.Depth ?? view.Depth,
             Summaries.Order(settings, rules, summaries), settings.FreeBands, summaries);
         return options.Format == "json" ? Summaries.Json(report) : Summaries.Table(report);
@@ -257,7 +258,7 @@ public static class Cli
         if ((until - from).TotalDays > 62)
             throw new UsageException("That's more than two months to look through: ask for a shorter range.");
         var request = new SlotRequest(essential, optional, minutes, from, by, until, options.Place ?? "either",
-            options.Max ?? config.Slots.MaxCandidates);
+            options.Max ?? config.Slots.MaxCandidates, options.Topic);
         var report = Slots.Build(config, source, request, now);
         return options.Format == "json" ? Slots.Json(report) : Slots.Table(report);
     }
@@ -369,6 +370,9 @@ public static class Cli
                     break;
                 case (true, "--until") when slots:
                     options.Until = Value(name, ref i, arg);
+                    break;
+                case (true, "--topic") when slots:
+                    options.Topic = Value(name, ref i, arg);
                     break;
                 case (true, "--place") when slots:
                     options.Place = Value(name, ref i, arg).ToLowerInvariant();

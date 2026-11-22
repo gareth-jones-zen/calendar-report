@@ -32,7 +32,15 @@ Windows (x64) only; nothing else is needed.
 
 **It needs Calendars.Read.Shared** (to read calendars shared with you, as Outlook does) and **User.ReadBasic.All** (to
 look people up by name) on Microsoft's "Graph Command Line Tools" app. The first `sign-in` asks for them; some
-organisations need an admin to approve.
+organisations need an admin to approve. **Free/busy** (below) needs **Calendars.Read** (`free_busy_scope`), which a
+sign-in shared with another tool usually already holds.
+
+**A colleague's calendar that isn't shared in full** (0.8.0): many organisations' default sharing lets Outlook show
+a colleague's meetings with their titles, which an app can only read through free/busy (Graph's `getSchedule`), not
+the calendar itself (that answers 403). So when a calendar is refused, `events`, `summary` and `slots` read that
+person's free/busy instead, and say **"titles only"**: each meeting's times, show-as, subject and location (where
+their sharing shows them) and whether it's private, but not who's invited, the organiser, their response or whether
+it recurs. Only when free/busy is refused too is the person shown as not visible.
 
 ## Commands
 
@@ -289,6 +297,7 @@ calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --
 | `--until DATE` | The last day looked at; candidates after `--by` are marked. Default `past_by_days` working days after `--by` |
 | `--place P` | `in-person`, `online` or `either` (default): in-person puts your office days (your work plan) first |
 | `--max N` | How many candidates (default `max_candidates`) |
+| `--topic WORDS` | Also list **related meetings**: any meeting already in anyone's calendar (in the range) whose subject shares at least half of these words' significant ones (common words dropped; a word in capitals, like `ITS`, kept; `FibreHub` matches "Fibre Hub"). Listed, never a candidate |
 | `--format table\|json`, `--json` | The table, or JSON |
 
 **How the candidates are found:**
@@ -301,7 +310,13 @@ calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --
   `[slots] rules` (default `slots`; the built-in list below when the settings have none). A rule with `count =
   "skip"` (free time) isn't in the way, `"not-working"` (lunch, travel) is soft and `"leave"` fixed; an event no rule
   meets is **fixed** ("someone else's meeting"). A meeting they declined isn't in the way.
-- **No details visible** (their sharing shows only free/busy, so no subject): busy is fixed, tentative is soft.
+- **Titles only** (their calendar read through free/busy, 0.8.0): a rule that tests what free/busy can't show
+  (`organizer`, `organizer_title`, `category`, `own_block`, `one_to_one_with`, `mostly`, `owner_organizes`,
+  `owner_attends`, `external`, `recurring`, `response`, `min_attendees`) never holds for their meetings, so rules on
+  the subject, show-as, private and length still apply; one no rule meets is **fixed** if busy and **soft** if
+  tentative. **No details visible** (no subject at all): busy is fixed, tentative is soft.
+- **Adjacent starts collapse** (0.8.0): starts a step apart on a day with exactly the same things in the way become
+  one candidate, shown as "10:00-10:45 (or start up to 10:30)" (`latestStart` in JSON).
 - **The sift:** a time where anyone essential has something fixed is dropped (the count is shown). The rest are
   sorted: those where what's in the way is movable before soft; fewer people affected; inside `--by` before after it;
   fewer optional people unable to come; fewer soft items; your office days first for in-person; then earliest.
@@ -357,7 +372,7 @@ A label rule can't be in a list a summary view uses (it has no group), and a sum
 [slots]
 hours = "09:00-17:00"     # candidates within these (default)
 lunch = "12:00-13:30"     # a time over lunch is soft (default: none)
-step_minutes = 30         # the grid (default)
+step_minutes = 15         # the grid (default 15 since 0.8.0; 30 before)
 max_candidates = 15       # default
 per_day = 3               # at most this many from one day (default)
 past_by_days = 5          # working days past --by that --until defaults to (default)
@@ -370,9 +385,11 @@ org_domain = "example.com"   # for external (default: your own address's domain)
 when this file has a `[leave]` section. Without one, the library's defaults are used.
 
 **JSON:** `minutes`, `from`, `by`, `until`, `place`, `timeZone`, `people` (`name`, `address`, `essential`),
-`considered`, `ruledOut`, `notes`, and `candidates`: each with `start`, `end`, `pastBy`, `ownerLocation` (your work
+`considered`, `ruledOut`, `notes`, `titlesOnly` (the names read through free/busy), `topic` and `related` (with
+`--topic`: each `subject`, `start`, `end`, `organizer` (null for titles only) and `people`, who of those asked has
+it), and `candidates`: each with `start`, `end`, `latestStart` (null unless collapsed), `pastBy`, `ownerLocation` (your work
 plan: `office`, `remote`, `timeOff`, or null), `lunch`, `people` (`name`, `address`, `essential`, `readable`,
-`free`, `items`: `subject` (null when not visible), `start`, `end`, `label`, `why`, `rule`, `detailsVisible`) and
+`titlesOnly`, `free`, `items`: `subject` (null when not visible), `start`, `end`, `label`, `why`, `rule`, `detailsVisible`) and
 `gives` (a line for each thing in the way).
 
 ## What it reads
@@ -423,6 +440,7 @@ msal_cache = "..."                   # optional: another tool's token cache, to 
 log_file = "..."                     # optional; default %LOCALAPPDATA%\calendar-report\calendar-report.log
 time_zone = "GMT Standard Time"      # optional (a Windows name); default this PC's
 lookup_scope = "User.ReadBasic.All"  # optional: the permission for name lookups (User.Read.All works too)
+free_busy_scope = "Calendars.Read"   # optional: the permission free/busy is read with, for a calendar refused in full
 calendar_months_ahead = 3            # optional (1-24): how far ahead `contacts` looks for the next one booked, in
                                      # calendar months, usually from the base; [contacts] lookahead_days wins over it
 

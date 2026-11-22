@@ -118,6 +118,12 @@ public sealed class RuleContext(ISource source, Config config)
 
     private bool Matches(Rule r, Event e, Person person, string self, string organizer, HashSet<string> others)
     {
+        // Free/busy (0.8.0) gives times, show-as, subject, location and private only: a test of something it can't
+        // know never holds, so such an event falls to rules about what it does show.
+        if (e.FreeBusy && (r.Category is not null || r.Organizer is not null || r.OrganizerTitle is not null || r.OwnBlock is not null
+                           || r.OneToOneWith is not null || r.Mostly is not null || r.OwnerOrganizes is not null || r.OwnerAttends is not null
+                           || r.External is not null || r.Recurring is not null || r.Response is not null || r.MinAttendees is not null))
+            return false;
         var minutes = (e.End - e.Start).TotalMinutes;
         if (r.Subject is { } subject && !subject.IsMatch(e.Subject)) return false;
         if (r.NotSubject is { } not && not.IsMatch(e.Subject)) return false;

@@ -17,6 +17,7 @@ public class UsageException(string message) : Exception(message);
 ///     log_file = "..."                    # optional; default %LOCALAPPDATA%\calendar-report\calendar-report.log
 ///     time_zone = "GMT Standard Time"     # optional: times are shown in this (Windows) time zone; default the PC's
 ///     lookup_scope = "User.ReadBasic.All" # optional: the permission used to look people up by name
+///     free_busy_scope = "Calendars.Read"  # optional: the permission for free/busy (getSchedule), when a calendar is refused
 ///
 ///     [groups]                            # optional: names for lists of people
 ///     team = ["ann@example.com", "Bob Smith"]
@@ -40,6 +41,7 @@ public sealed partial class Config
         "# log_file = \"...\"                  # default %LOCALAPPDATA%\\calendar-report\\calendar-report.log\n" +
         "# time_zone = \"GMT Standard Time\"   # default: this PC's time zone\n" +
         "# lookup_scope = \"User.ReadBasic.All\"\n" +
+        "# free_busy_scope = \"Calendars.Read\"  # free/busy, read when someone's calendar itself is refused\n" +
         "# calendar_months_ahead = 3          # how far ahead `contacts` looks for the next one booked (or [contacts] lookahead_days)\n" +
         "\n" +
         "# Names for lists of people, to use in place of addresses: calendar-report events team\n" +
@@ -51,14 +53,14 @@ public sealed partial class Config
         "# [slots]\n" +
         "# hours = \"09:00-17:00\"      # candidates start and end within these\n" +
         "# lunch = \"12:00-13:30\"      # a candidate over lunch counts as soft\n" +
-        "# step_minutes = 30\n" +
+        "# step_minutes = 15\n" +
         "# max_candidates = 15\n" +
         "# per_day = 3                 # at most this many candidates from one day\n" +
         "# past_by_days = 5            # working days past --by that candidates may go to, marked\n";
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "free_busy_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -69,6 +71,9 @@ public sealed partial class Config
     public required string LogFile { get; init; }
     public required TimeZoneInfo TimeZone { get; init; }
     public string LookupScope { get; init; } = "User.ReadBasic.All";
+
+    /// <summary>The permission free/busy (getSchedule) is read with, when someone's calendar itself is refused (0.8.0).</summary>
+    public string FreeBusyScope { get; init; } = "Calendars.Read";
     public IReadOnlyDictionary<string, IReadOnlyList<string>> Groups { get; init; } = new Dictionary<string, IReadOnlyList<string>>();
 
     /// <summary>[summary], [view.NAME] and [rules.NAME]: how `summary` adds time up (0.4.0).</summary>
@@ -191,6 +196,7 @@ public sealed partial class Config
             LogFile = Text("log_file") is { Length: > 0 } log ? PathSetting(log) : PyPath.Pure(System.IO.Path.Combine(Local(env), "calendar-report.log")),
             TimeZone = zone,
             LookupScope = Text("lookup_scope") is { Length: > 0 } scope ? scope : "User.ReadBasic.All",
+            FreeBusyScope = Text("free_busy_scope") is { Length: > 0 } fbScope ? fbScope : "Calendars.Read",
             Groups = groups,
             Summary = SummarySettings.Parse(raw, full, groups),
             Contacts = ContactSettings.Parse(raw, full, MonthsAhead(raw, full)),

@@ -8,9 +8,12 @@ namespace CalendarReport;
 /// <summary>One person's part of a report: their events, their work plan, or both (null where it wasn't asked for, or
 /// can't be read: WorkPlanUnreadable says which).</summary>
 public sealed record PersonSchedule(Person Person, IReadOnlyList<Event>? Events, IReadOnlyList<WorkSegment>? WorkPlan,
-    bool WorkPlanUnreadable = false)
+    bool WorkPlanUnreadable = false, bool TitlesOnly = false)
 {
     public const string Unreadable = "only your own work plan can be read";
+
+    /// <summary>Said of someone read through free/busy (0.8.0): their calendar isn't shared in full.</summary>
+    public const string TitlesOnlyNote = "titles only (free/busy): who's invited and their responses aren't visible";
 }
 
 /// <summary>What was read: from (inclusive) to (exclusive), in the report's time zone.</summary>
@@ -49,8 +52,9 @@ public static class Reports
         new(from, to, zone, people.Select(p =>
         {
             var plan = workPlan ? source.WorkPlan(p, from, to) : null;
-            return new PersonSchedule(p, events ? source.Events(p, from, to).Where(e => cancelled || !e.Cancelled).ToList() : null,
-                plan, workPlan && plan is null);
+            var read = events ? CalendarReads.Read(source, p, from, to) : null;
+            return new PersonSchedule(p, read?.Events.Where(e => cancelled || !e.Cancelled).ToList(),
+                plan, workPlan && plan is null, read?.FreeBusyOnly ?? false);
         }).ToList());
 
     // ---- table --------------------------------------------------------------------------------------------------
@@ -64,6 +68,8 @@ public static class Reports
             if (text.Length > 0)
                 text.Append('\n');
             text.Append(person.Person.Address == "me" ? person.Person.Name : $"{person.Person.Name} <{person.Person.Address}>").Append('\n');
+            if (person.TitlesOnly)
+                text.Append($"  ({PersonSchedule.TitlesOnlyNote})\n");
             if (person.WorkPlanUnreadable)
                 text.Append($"  (work plan: {PersonSchedule.Unreadable})\n");
             if (person.WorkPlanUnreadable && person.Events is null)
@@ -165,6 +171,8 @@ public static class Reports
                     ["type"] = e.Type, ["seriesMasterId"] = e.SeriesMasterId,
                     ["originalStart"] = e.OriginalStart is { } os ? Iso(os) : null,
                 }).ToArray());
+            if (p.TitlesOnly)
+                item["titlesOnly"] = true;
             if (p.WorkPlanUnreadable)
                 item["workPlanNote"] = PersonSchedule.Unreadable;
             if (p.WorkPlan is not null)

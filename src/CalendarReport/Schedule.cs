@@ -13,12 +13,14 @@ public sealed record Person(string Address, string Name)
 
 /// <summary>One calendar event, in the report's time zone. Type (singleInstance, occurrence or exception),
 /// SeriesMasterId and OriginalStart (when an occurrence was first due, before any move) place an occurrence in its
-/// recurring meeting (0.5.0, for `contacts`).</summary>
+/// recurring meeting (0.5.0, for `contacts`). FreeBusy (0.8.0) marks an event read through free/busy (getSchedule)
+/// because the person's calendar itself was refused: only its times, show-as, subject and location (where their
+/// sharing shows them) and whether it's private are known; organiser, attendees, response and recurrence aren't.</summary>
 public sealed record Event(
     DateTime Start, DateTime End, bool AllDay, string ShowAs, string Subject, string? Location, string? Organizer,
     int Attendees, bool Online, string Sensitivity, IReadOnlyList<string> Categories, bool Cancelled, string? Response,
     IReadOnlyList<Attendee>? Invitees = null, string? OrganizerAddress = null,
-    string? Type = null, string? SeriesMasterId = null, DateTime? OriginalStart = null);
+    string? Type = null, string? SeriesMasterId = null, DateTime? OriginalStart = null, bool FreeBusy = false);
 
 /// <summary>A recurring meeting's pattern, as Graph's patternedRecurrence gives it: the pattern type (daily, weekly,
 /// absoluteMonthly, relativeMonthly, absoluteYearly, relativeYearly), its interval and days, and the range (from
@@ -43,6 +45,11 @@ public interface ISource
     Person Resolve(string who);
 
     IReadOnlyList<Event> Events(Person person, DateTime from, DateTime to);
+
+    /// <summary>Someone's schedule through free/busy (Graph's getSchedule), as Outlook shows a colleague's calendar
+    /// when it isn't shared in full: times, show-as, and subject and location where their sharing shows them. Each
+    /// event has FreeBusy set. Throws GraphRequestException (403) when even that is refused.</summary>
+    IReadOnlyList<Event> FreeBusy(Person person, DateTime from, DateTime to);
 
     /// <summary>The work plan, or null where it can't be read: Graph serves only your own.</summary>
     IReadOnlyList<WorkSegment>? WorkPlan(Person person, DateTime from, DateTime to);
@@ -132,6 +139,52 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
                   + "&$orderby=start/dateTime&$top=250";
         return graph.PagesAsync(url, Scopes, Headers).ToBlockingEnumerable().OfType<JsonObject>()
             .Select(o => ReadEvent(o, config.TimeZone)).ToList();
+    }
+
+    /// <summary>getSchedule takes at most 62 days at a time.</summary>
+    private const int FreeBusyChunkDays = 60;
+
+    public IReadOnlyList<Event> FreeBusy(Person person, DateTime from, DateTime to)
+    {
+        var address = person.Address == "me" ? MyAddress() : person.Address;
+        var events = new List<Event>();
+        for (var start = from; start < to; start = start.AddDays(FreeBusyChunkDays))
+        {
+            var end = start.AddDays(FreeBusyChunkDays) < to ? start.AddDays(FreeBusyChunkDays) : to;
+            JsonObject When(DateTime t) => new()
+            {
+                ["dateTime"] = t.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+                ["timeZone"] = config.TimeZone.Id,
+            };
+            var body = new JsonObject
+            {
+                ["schedules"] = new JsonArray(address),
+                ["startTime"] = When(start),
+                ["endTime"] = When(end),
+                ["availabilityViewInterval"] = 15,
+            };
+            var found = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers)
+                .GetAwaiter().GetResult();
+            var schedule = (found["value"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
+            if (schedule is null || schedule["error"] is JsonObject || schedule["scheduleItems"] is not JsonArray items)
+            {
+                var why = (schedule?["error"] as JsonObject) is { } error ? Text(error, "message") ?? "refused" : "no schedule returned";
+                throw new GraphRequestException(System.Net.HttpStatusCode.Forbidden, "POST", "/me/calendar/getSchedule", why);
+            }
+            events.AddRange(items.OfType<JsonObject>().Select(ReadScheduleItem));
+        }
+        return events.DistinctBy(e => (e.Start, e.End, e.Subject)).OrderBy(e => e.Start).ToList();
+    }
+
+    /// <summary>A getSchedule scheduleItem as an event (FreeBusy set). An item from midnight to midnight is all-day.</summary>
+    internal static Event ReadScheduleItem(JsonObject item)
+    {
+        var start = Time(item["start"]);
+        var end = Time(item["end"]);
+        return new Event(start, end, start.TimeOfDay == TimeSpan.Zero && end.TimeOfDay == TimeSpan.Zero && end > start,
+            Text(item, "status") ?? "busy", Text(item, "subject") ?? "",
+            Text(item, "location") is { Length: > 0 } location ? location : null, null, 0, false,
+            Flag(item, "isPrivate") ? "private" : "normal", [], false, null, null, null, null, null, null, FreeBusy: true);
     }
 
     public Recurrence? Series(Person person, string seriesMasterId)
@@ -277,4 +330,33 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
 
     private static bool Flag(JsonObject o, string key) =>
         o[key] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+}
+
+/// <summary>Someone's events, and whether they came through free/busy (0.8.0) because their calendar itself was
+/// refused: Outlook shows a colleague's calendar with titles at Zen's default sharing, which apps can only read through
+/// getSchedule, while the full calendar (attendees, responses) needs it shared in full.</summary>
+public sealed record CalendarRead(IReadOnlyList<Event> Events, bool FreeBusyOnly);
+
+public static class CalendarReads
+{
+    /// <summary>The calendar, or free/busy where the calendar is refused (403/404); the calendar's refusal is
+    /// rethrown if free/busy is refused too.</summary>
+    public static CalendarRead Read(ISource source, Person person, DateTime from, DateTime to)
+    {
+        try
+        {
+            return new CalendarRead(source.Events(person, from, to), false);
+        }
+        catch (GraphRequestException refused) when ((int)refused.Status is 403 or 404)
+        {
+            try
+            {
+                return new CalendarRead(source.FreeBusy(person, from, to), true);
+            }
+            catch (GraphRequestException also) when ((int)also.Status is 400 or 403 or 404)
+            {
+                throw refused;
+            }
+        }
+    }
 }

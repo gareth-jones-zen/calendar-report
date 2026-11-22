@@ -20,11 +20,32 @@ internal sealed class FakeSource : ISource
     public Person Resolve(string who) =>
         People.TryGetValue(who, out var p) ? p : throw new UsageException($"No one in the directory is called '{who}'.");
 
+    /// <summary>People whose calendar itself is refused (403), as Graph does when it isn't shared in full.</summary>
+    public HashSet<string> Refused { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>What free/busy (getSchedule) gives for someone; anyone not here is refused there too.</summary>
+    public Dictionary<string, List<Event>> FreeBusyCalendars { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public IReadOnlyList<Event> Events(Person person, DateTime from, DateTime to)
     {
         Asked.Add($"events {person.Address} {from:yyyy-MM-dd} {to:yyyy-MM-dd}");
+        if (Refused.Contains(person.Address))
+            throw new M365Graph.GraphRequestException(System.Net.HttpStatusCode.Forbidden, "GET", "/users/x/calendarView", "ErrorAccessDenied");
         return Calendars.GetValueOrDefault(person.Address, []).Where(e => e.Start < to && e.End > from).ToList();
     }
+
+    public IReadOnlyList<Event> FreeBusy(Person person, DateTime from, DateTime to)
+    {
+        Asked.Add($"freebusy {person.Address} {from:yyyy-MM-dd} {to:yyyy-MM-dd}");
+        if (!FreeBusyCalendars.TryGetValue(person.Address, out var events))
+            throw new M365Graph.GraphRequestException(System.Net.HttpStatusCode.Forbidden, "POST", "/me/calendar/getSchedule", "refused");
+        return events.Where(e => e.Start < to && e.End > from).Select(e => e with { FreeBusy = true }).ToList();
+    }
+
+    /// <summary>A free/busy item: times, show-as and subject (empty when not shown), as getSchedule gives it.</summary>
+    public static Event Item(string start, string end, string subject, string showAs = "busy", bool isPrivate = false) =>
+        new(DateTime.Parse(start), DateTime.Parse(end), false, showAs, subject, null, null, 0, false,
+            isPrivate ? "private" : "normal", [], false, null, null, null, FreeBusy: true);
 
     public IReadOnlyList<WorkSegment>? WorkPlan(Person person, DateTime from, DateTime to) =>
         person.Address == "me" ? MyPlan.Where(s => s.Start < to && s.End > from).ToList() : null;

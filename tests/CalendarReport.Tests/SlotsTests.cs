@@ -96,7 +96,7 @@ public sealed class SlotsTests : IDisposable
     private static SlotPerson Who(SlotCandidate c, string address) =>
         c.People.Single(p => p.Person.Address == address || (address == Me && p.Person.Address == "me"));
 
-    private const string AllOfThem = "[slots]\nper_day = 50\n";
+    private const string AllOfThem = "[slots]\nper_day = 50\nstep_minutes = 30\n";
 
     [Fact]
     public void A_one_to_one_with_the_owner_is_movable()
@@ -199,6 +199,7 @@ public sealed class SlotsTests : IDisposable
         var config = Settings("""
             [slots]
             per_day = 50
+            step_minutes = 30
             [[rules.slots]]
             owner_attends = true
             recurring = false
