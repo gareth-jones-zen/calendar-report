@@ -40,6 +40,7 @@ public sealed partial class Config
         "# log_file = \"...\"                  # default %LOCALAPPDATA%\\calendar-report\\calendar-report.log\n" +
         "# time_zone = \"GMT Standard Time\"   # default: this PC's time zone\n" +
         "# lookup_scope = \"User.ReadBasic.All\"\n" +
+        "# calendar_months_ahead = 3          # how far ahead `contacts` looks for the next one booked (or [contacts] lookahead_days)\n" +
         "\n" +
         "# Names for lists of people, to use in place of addresses: calendar-report events team\n" +
         "# [groups]\n" +
@@ -47,7 +48,7 @@ public sealed partial class Config
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "groups", "summary", "view", "rules", "contacts"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -175,8 +176,19 @@ public sealed partial class Config
             LookupScope = Text("lookup_scope") is { Length: > 0 } scope ? scope : "User.ReadBasic.All",
             Groups = groups,
             Summary = SummarySettings.Parse(raw, full, groups),
-            Contacts = ContactSettings.Parse(raw, full),
+            Contacts = ContactSettings.Parse(raw, full, MonthsAhead(raw, full)),
         };
+    }
+
+    /// <summary>calendar_months_ahead (0.6.0): how far ahead to look, in calendar months, for a tool that manages the
+    /// calendar; usually from a shared base file. Null when it isn't set.</summary>
+    private static int? MonthsAhead(TomlTable raw, string full)
+    {
+        if (!raw.TryGetValue("calendar_months_ahead", out var value))
+            return null;
+        return value is long months && months is >= 1 and <= 24
+            ? (int)months
+            : throw new UsageException($"{full}: calendar_months_ahead should be a whole number from 1 to 24.");
     }
 
     /// <summary>Create the settings file (if missing) and return where it is.</summary>

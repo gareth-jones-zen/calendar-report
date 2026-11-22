@@ -240,7 +240,7 @@ wider  (flagged after 42 days)
 max_attendees = 6            # an all-hands isn't contact
 cadence_max_attendees = 2    # recurring meetings checked for lost occurrences: 1:1s
 lookback_days = 120          # how far back to look (at least the longest gap)
-lookahead_days = 60          # how far ahead for the next one booked
+lookahead_days = 60          # how far ahead for the next one booked (default: calendar_months_ahead, else 60)
 recent_occurrences = 4       # how many of a recurring meeting's latest occurrences are checked
 
 [[contacts.ring]]
@@ -295,7 +295,7 @@ tool's settings: `base = "base-config.toml"` (relative to the settings file). Th
 - **the base's `[paths]` are variables** for this tool's paths, looked up before the environment: with
   `EA_LOCAL = "%LOCALAPPDATA%/claude-ea"` there, `log_file = "%EA_LOCAL%/calendar-report.log"` works here;
 - **its other settings that calendar-report knows and this file doesn't set are used**, typically `login_hint`,
-  `tenant`, `msal_cache` and `time_zone`;
+  `tenant`, `msal_cache`, `time_zone` and `calendar_months_ahead`;
 - **a table such as `[groups]` applies only if this file has that section too**, its own entries winning.
 
 The loader is background-tools-lib's `PyCompat.BaseSettings`.
@@ -313,6 +313,8 @@ msal_cache = "..."                   # optional: another tool's token cache, to 
 log_file = "..."                     # optional; default %LOCALAPPDATA%\calendar-report\calendar-report.log
 time_zone = "GMT Standard Time"      # optional (a Windows name); default this PC's
 lookup_scope = "User.ReadBasic.All"  # optional: the permission for name lookups (User.Read.All works too)
+calendar_months_ahead = 3            # optional (1-24): how far ahead `contacts` looks for the next one booked, in
+                                     # calendar months, usually from the base; [contacts] lookahead_days wins over it
 
 [groups]                             # names for lists of people
 team = ["ann@example.com", "Bob Smith"]

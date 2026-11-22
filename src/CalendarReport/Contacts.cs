@@ -27,7 +27,21 @@ public sealed class ContactSettings
     public int CadenceMaxAttendees { get; init; } = 2;
 
     public int LookbackDays { get; init; } = 120;
-    public int LookaheadDays { get; init; } = 60;
+    /// <summary>[contacts] lookahead_days, when set: it wins over <see cref="LookaheadMonths"/>.</summary>
+    public int? LookaheadDays { get; init; }
+
+    /// <summary>The top-level calendar_months_ahead (usually from a shared base file, 0.6.0), used when lookahead_days
+    /// isn't set: the same date that many calendar months on.</summary>
+    public int? LookaheadMonths { get; init; }
+
+    /// <summary>The look-ahead when neither is set.</summary>
+    public const int DefaultLookaheadDays = 60;
+
+    /// <summary>The first day after the look-ahead: lookahead_days if set, else calendar_months_ahead, else 60 days.</summary>
+    public DateTime LookaheadEnd(DateTime today) =>
+        LookaheadDays is { } days ? today.Date.AddDays(days + 1)
+        : LookaheadMonths is { } months ? today.Date.AddMonths(months).AddDays(1)
+        : today.Date.AddDays(DefaultLookaheadDays + 1);
 
     /// <summary>How many of a recurring meeting's most recent occurrences are checked for being lost.</summary>
     public int RecentOccurrences { get; init; } = 4;
@@ -38,10 +52,10 @@ public sealed class ContactSettings
     /// ring's people.</summary>
     public IReadOnlyDictionary<string, string> Why { get; init; } = new Dictionary<string, string>();
 
-    internal static ContactSettings Parse(TomlTable raw, string file)
+    internal static ContactSettings Parse(TomlTable raw, string file, int? monthsAhead = null)
     {
         if (!raw.TryGetValue("contacts", out var value))
-            return new ContactSettings();
+            return new ContactSettings { LookaheadMonths = monthsAhead };
         UsageException Bad(string message) => new($"{file}: {message}");
         if (value is not TomlTable table)
             throw Bad("[contacts] should be a table.");
@@ -96,7 +110,8 @@ public sealed class ContactSettings
             MaxAttendees = Whole(table, "max_attendees", "contacts", 6, 2, 1000),
             CadenceMaxAttendees = Whole(table, "cadence_max_attendees", "contacts", 2, 2, 1000),
             LookbackDays = Whole(table, "lookback_days", "contacts", 120, 7, 366),
-            LookaheadDays = Whole(table, "lookahead_days", "contacts", 60, 0, 366),
+            LookaheadDays = table.ContainsKey("lookahead_days") ? Whole(table, "lookahead_days", "contacts", 0, 0, 366) : null,
+            LookaheadMonths = monthsAhead,
             RecentOccurrences = Whole(table, "recent_occurrences", "contacts", 4, 1, 52),
             Rings = rings,
             Why = why,
@@ -197,7 +212,7 @@ public static class Contacts
     {
         var settings = config.Contacts;
         var from = now.Date.AddDays(-settings.LookbackDays);
-        var to = now.Date.AddDays(settings.LookaheadDays + 1);
+        var to = settings.LookaheadEnd(now);
         var events = source.Events(me, from, to);
         var series = new Dictionary<string, Recurrence?>();
         Recurrence? Series(string id)
