@@ -61,6 +61,27 @@ internal sealed class FakeSource : ISource
     public Dictionary<string, Recurrence> Masters { get; } = [];
     public Recurrence? Series(Person person, string seriesMasterId) => Masters.GetValueOrDefault(seriesMasterId);
 
+    /// <summary>The directory's rooms; null: refused (the rooms permission not granted).</summary>
+    public List<Room>? DirectoryRooms { get; set; }
+
+    /// <summary>Rooms' bookings by address; a room not here can't be read.</summary>
+    public Dictionary<string, List<(DateTime Start, DateTime End)>> Bookings { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<Room>? Rooms()
+    {
+        Asked.Add("rooms");
+        return DirectoryRooms;
+    }
+
+    public IReadOnlyDictionary<string, IReadOnlyList<(DateTime Start, DateTime End)>?> RoomBookings(
+        IReadOnlyList<string> addresses, DateTime from, DateTime to)
+    {
+        Asked.Add($"room bookings {string.Join(",", addresses)}");
+        return addresses.ToDictionary(a => a, a => Bookings.TryGetValue(a, out var b)
+            ? (IReadOnlyList<(DateTime Start, DateTime End)>?)b.Where(x => x.Start < to && x.End > from).ToList() : null,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
     public static Event Meeting(string start, string end, string subject, int attendees = 3, bool online = true,
         string showAs = "busy", bool cancelled = false, string? response = "accepted", bool allDay = false) =>
         new(DateTime.Parse(start), DateTime.Parse(end), allDay, showAs, subject, null, "Organiser", attendees, online, "normal", [],

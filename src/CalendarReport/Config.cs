@@ -18,6 +18,7 @@ public class UsageException(string message) : Exception(message);
 ///     time_zone = "GMT Standard Time"     # optional: times are shown in this (Windows) time zone; default the PC's
 ///     lookup_scope = "User.ReadBasic.All" # optional: the permission used to look people up by name
 ///     free_busy_scope = "Calendars.Read"  # optional: the permission for free/busy (getSchedule), when a calendar is refused
+///     rooms_scope = "Place.Read.All"      # optional: the permission for the directory's meeting rooms (`slots`)
 ///
 ///     [groups]                            # optional: names for lists of people
 ///     team = ["ann@example.com", "Bob Smith"]
@@ -42,6 +43,7 @@ public sealed partial class Config
         "# time_zone = \"GMT Standard Time\"   # default: this PC's time zone\n" +
         "# lookup_scope = \"User.ReadBasic.All\"\n" +
         "# free_busy_scope = \"Calendars.Read\"  # free/busy, read when someone's calendar itself is refused\n" +
+        "# rooms_scope = \"Place.Read.All\"    # the directory's meeting rooms, for `slots` (else [[slots.rooms]])\n" +
         "# calendar_months_ahead = 3          # how far ahead `contacts` looks for the next one booked (or [contacts] lookahead_days)\n" +
         "\n" +
         "# Names for lists of people, to use in place of addresses: calendar-report events team\n" +
@@ -56,11 +58,17 @@ public sealed partial class Config
         "# step_minutes = 15\n" +
         "# max_candidates = 15\n" +
         "# per_day = 3                 # at most this many candidates from one day\n" +
-        "# past_by_days = 5            # working days past --by that candidates may go to, marked\n";
+        "# past_by_days = 5            # working days past --by that candidates may go to, marked\n" +
+        "# room_floors = [\"3\", \"2\"]    # in person, on your office days: rooms on these floors first\n" +
+        "# [[slots.rooms]]             # the rooms, when the directory's can't be read (rooms_scope not granted)\n" +
+        "# name = \"Room 1\"\n" +
+        "# address = \"room1@example.com\"\n" +
+        "# capacity = 6                # optional: a room with none counts as fitting\n" +
+        "# floor = \"3\"                 # optional\n";
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "free_busy_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "free_busy_scope", "rooms_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -74,6 +82,10 @@ public sealed partial class Config
 
     /// <summary>The permission free/busy (getSchedule) is read with, when someone's calendar itself is refused (0.8.0).</summary>
     public string FreeBusyScope { get; init; } = "Calendars.Read";
+
+    /// <summary>The permission the directory's meeting rooms (/places) are read with (0.10.0); asked for silently,
+    /// and when it isn't granted, `slots` uses [[slots.rooms]] instead.</summary>
+    public string RoomsScope { get; init; } = "Place.Read.All";
     public IReadOnlyDictionary<string, IReadOnlyList<string>> Groups { get; init; } = new Dictionary<string, IReadOnlyList<string>>();
 
     /// <summary>[summary], [view.NAME] and [rules.NAME]: how `summary` adds time up (0.4.0).</summary>
@@ -197,6 +209,7 @@ public sealed partial class Config
             TimeZone = zone,
             LookupScope = Text("lookup_scope") is { Length: > 0 } scope ? scope : "User.ReadBasic.All",
             FreeBusyScope = Text("free_busy_scope") is { Length: > 0 } fbScope ? fbScope : "Calendars.Read",
+            RoomsScope = Text("rooms_scope") is { Length: > 0 } roomsScope ? roomsScope : "Place.Read.All",
             Groups = groups,
             Summary = SummarySettings.Parse(raw, full, groups),
             Contacts = ContactSettings.Parse(raw, full, MonthsAhead(raw, full)),

@@ -32,7 +32,7 @@ public static class Cli
     public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,slots,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,slots,rooms,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
@@ -45,6 +45,7 @@ public static class Cli
         "    calendar-report summary [PEOPLE...]      where their time went, by week (rules in the settings)\n" +
         "    calendar-report contacts [PEOPLE...]     when you last met, and next meet, the people in your rings\n" +
         "    calendar-report slots PEOPLE... --minutes N   times for a meeting with them, and what's in the way\n" +
+        "    calendar-report rooms                    the meeting rooms `slots` chooses from, best first\n" +
         "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
         "    calendar-report groups                   the groups in the settings\n" +
         "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
@@ -70,7 +71,9 @@ public static class Cli
         "    --from DATE        the first day (default tomorrow)\n" +
         "    --by DATE          when you'd like it by: a preference (default 10 working days on)\n" +
         "    --until DATE       the last day looked at (default [slots] past_by_days working days after --by)\n" +
-        "    --place P          in-person, online or either (default either): in-person puts your office days first\n" +
+        "    --place P          in-person, online or either (default either): in-person puts your office days first;\n" +
+        "                       in-person or either finds a free room that fits on your office days\n" +
+        "    --room-only        only times with a room (so only your office days)\n" +
         "    --max N            how many candidates (default [slots] max_candidates)\n" +
         "    --topic WORDS      also list meetings already in anyone's calendar whose subject shares these words\n" +
         "    --format F         table (default) or json; --json is the same as --format json\n\n" +
@@ -79,7 +82,7 @@ public static class Cli
         "  --version        show program's version number and exit\n" +
         "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
-    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "slots", "who", "groups"];
+    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "slots", "rooms", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
 
     public static string Version =>
@@ -96,7 +99,7 @@ public static class Cli
         public string? By, Until, Place, Topic;
         public int? Minutes, Max;
         public string Format = "table";
-        public bool WorkPlan, Cancelled, Flagged;
+        public bool WorkPlan, Cancelled, Flagged, RoomOnly;
     }
 
     private sealed class ArgumentsException(string message) : Exception(message);
@@ -154,6 +157,11 @@ public static class Cli
                     return 0;
             }
             var source = host.Source(config);
+            if (options.Command == "rooms")
+            {
+                host.Out.Write(RoomsCommand(config, source));
+                return 0;
+            }
             if (options.Command == "slots")
             {
                 host.Out.Write(SlotsCommand(options, config, source, host.Today(), host.Now(config.TimeZone)));
@@ -235,6 +243,23 @@ public static class Cli
         return options.Format == "json" ? Summaries.Json(report) : Summaries.Table(report);
     }
 
+    /// <summary>`rooms` (0.10.0): the meeting rooms `slots` chooses from, in the order it tries them, and where the
+    /// list came from (the directory, or the settings when rooms_scope isn't granted).</summary>
+    private static string RoomsCommand(Config config, ISource source)
+    {
+        var (rooms, from) = Slots.RoomList(config, source);
+        var b = new StringBuilder();
+        b.Append(from == "directory"
+            ? $"{rooms.Count} room{(rooms.Count == 1 ? "" : "s")} from the directory ({config.RoomsScope} granted)"
+            : $"{rooms.Count} room{(rooms.Count == 1 ? "" : "s")} from the settings ({config.RoomsScope} not granted)");
+        b.Append(rooms.Count == 0 ? ".\n" : ", in the order slots tries them:\n");
+        foreach (var r in Slots.RankRooms(rooms, config.Slots))
+            b.Append("  ").Append(r.Name).Append(" <").Append(r.Address).Append(">  seats ")
+                .Append(r.Capacity?.ToString(CultureInfo.InvariantCulture) ?? "?").Append("  floor ").Append(r.Floor ?? "?")
+                .Append(r.Building is { } building ? "  " + building : "").Append('\n');
+        return b.ToString();
+    }
+
     /// <summary>`slots` (0.7.0): the request from the options, then the report. You come first among the essential
     /// people; anyone named both ways is essential.</summary>
     private static string SlotsCommand(Options options, Config config, ISource source, DateTime today, DateTime now)
@@ -257,8 +282,10 @@ public static class Cli
             throw new UsageException($"--until ({until:yyyy-MM-dd}) is before --by ({by:yyyy-MM-dd}).");
         if ((until - from).TotalDays > 62)
             throw new UsageException("That's more than two months to look through: ask for a shorter range.");
+        if (options.RoomOnly && options.Place == "online")
+            throw new UsageException("--room-only is for a meeting in person: not with --place online.");
         var request = new SlotRequest(essential, optional, minutes, from, by, until, options.Place ?? "either",
-            options.Max ?? config.Slots.MaxCandidates, options.Topic);
+            options.Max ?? config.Slots.MaxCandidates, options.Topic, options.RoomOnly);
         var report = Slots.Build(config, source, request, now);
         return options.Format == "json" ? Slots.Json(report) : Slots.Table(report);
     }
@@ -382,6 +409,9 @@ public static class Cli
                 case (true, "--json") when slots:
                     options.Format = "json";
                     break;
+                case (true, "--room-only") when slots:
+                    options.RoomOnly = true;
+                    break;
                 case (true, "--to" or "--days" or "--out") when slots:
                     throw new ArgumentsException($"unrecognized arguments: {arg} (slots takes --from, --by and --until, and only prints)");
                 case (true, "--ring") when contacts:
@@ -447,7 +477,7 @@ public static class Cli
             throw new ArgumentsException("the following arguments are required: people");
         if (options.Command == "slots" && options.People.Count == 0)
             throw new ArgumentsException("the following arguments are required: people (who the meeting is with)");
-        if (options.Command is "config" or "sign-in" or "groups" && options.People.Count > 0)
+        if (options.Command is "config" or "sign-in" or "groups" or "rooms" && options.People.Count > 0)
             throw new ArgumentsException($"unrecognized arguments: {string.Join(" ", options.People)}");
         return options;
     }

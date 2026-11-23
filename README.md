@@ -33,7 +33,9 @@ Windows (x64) only; nothing else is needed.
 **It needs Calendars.Read.Shared** (to read calendars shared with you, as Outlook does) and **User.ReadBasic.All** (to
 look people up by name) on Microsoft's "Graph Command Line Tools" app. The first `sign-in` asks for them; some
 organisations need an admin to approve. **Free/busy** (below) needs **Calendars.Read** (`free_busy_scope`), which a
-sign-in shared with another tool usually already holds.
+sign-in shared with another tool usually already holds. **Meeting rooms** (`slots`, 0.10.0) are read from the
+directory with **Place.Read.All** (`rooms_scope`), which needs an admin's consent; it's only ever asked for silently,
+and without it the rooms come from the settings (`[[slots.rooms]]`).
 
 **A colleague's calendar that isn't shared in full** (0.8.0): many organisations' default sharing lets Outlook show
 a colleague's meetings with their titles, which an app can only read through free/busy (Graph's `getSchedule`), not
@@ -51,6 +53,7 @@ calendar-report work-plan [PEOPLE...]           where they're working each day
 calendar-report summary [PEOPLE...]             where their time went, by week (see Summaries)
 calendar-report contacts [PEOPLE...]            when you last met, and next meet, the people in your rings (see Contacts)
 calendar-report slots PEOPLE... --minutes N     times for a meeting with them, and what's in the way (see Slots)
+calendar-report rooms                           the meeting rooms slots chooses from, best first (see Slots)
 calendar-report who PEOPLE...                   who those words mean
 calendar-report groups                          the groups in the settings
 calendar-report config                          create the settings file and say where it is
@@ -295,7 +298,8 @@ calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --
 | `--from DATE` | The first day (default tomorrow) |
 | `--by DATE` | When you'd like it by: a **preference**. Default 10 working days after `--from` |
 | `--until DATE` | The last day looked at; candidates after `--by` are marked. Default `past_by_days` working days after `--by` |
-| `--place P` | `in-person`, `online` or `either` (default): in-person puts your office days (your work plan) first |
+| `--place P` | `in-person`, `online` or `either` (default): in-person puts your office days (your work plan) first; in-person or either finds a **room** on your office days (below) |
+| `--room-only` | Only times with a room (so only your office days); not with `--place online` |
 | `--max N` | How many candidates (default `max_candidates`) |
 | `--topic WORDS` | Also list **related meetings**: any meeting already in anyone's calendar (in the range) whose subject shares at least half of these words' significant ones (common words dropped; a word in capitals, like `ITS`, kept; `FibreHub` matches "Fibre Hub"). Listed, never a candidate |
 | `--format table\|json`, `--json` | The table, or JSON |
@@ -327,6 +331,35 @@ calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --
   whole list and leaves room for the clean ones. **Why:** ranking every clean time first let a run of clean days next
   week fill the list and push out this week's fair trade-offs (a 1:1 of yours that could move, a stand-up that could be
   gone over), and sooner often matters more than clean. JSON gives each candidate a `section`: `by-day` or `clean`.
+
+**Rooms** (0.10.0): **only on your office days** (your work plan says office at the start), and only for `--place
+in-person` or `either`; a remote day gets no room, and an online meeting looks for none.
+
+- **The rooms** come from the directory (Graph's `/places`, with `rooms_scope`, default `Place.Read.All`, asked for
+  silently, never with a browser). `[[slots.rooms]]` fills in a capacity or floor the directory leaves blank, and adds
+  any room only it names. **When the permission isn't granted, `[[slots.rooms]]` alone is used**, and the run says
+  "Room sizes from settings (Place.Read.All not granted)". `calendar-report rooms` lists them, in the order tried,
+  and where they came from.
+- **Which room:** one that seats everyone asked (you, the essential and the optional; **a room with no capacity
+  counts as fitting**) and is **free for the whole meeting** (its free/busy, through `getSchedule`; a room whose
+  bookings can't be read isn't offered, and the run says so). Of those, **the floors in `room_floors` first**, in
+  their order; then rooms matching `room_prefer`; then **the smallest that fits** (unknown sizes last); then by name.
+- **None free that fits** is a catch: `room: no room free that fits` in the candidate's `gives`.
+- **Ranking is unchanged, except** that for `--place in-person` an office-day time with a room comes before one
+  without, all else equal. Rooms are chosen before adjacent starts collapse, so a run of starts shares its room.
+- **It only reads**: booking the room is for whatever makes the meeting (an assistant's hold, say).
+
+```toml
+[slots]
+room_floors = ["3", "2"]          # rooms on these floors first, in this order (default: none)
+room_prefer = '^Board'            # then rooms whose name or address matches (default: none)
+
+[[slots.rooms]]                   # the rooms when the directory's can't be read; else filling in its blanks
+name = "Room 3.A"
+address = "room3.a@example.com"
+capacity = 6                      # optional: none counts as fitting
+floor = "3"                       # optional
+```
 
 **The built-in labels** (used when the settings have no `[[rules.slots]]`), first match wins:
 
@@ -392,10 +425,13 @@ org_domain = "example.com"   # for external (default: your own address's domain)
 when this file has a `[leave]` section. Without one, the library's defaults are used.
 
 **JSON:** `minutes`, `from`, `by`, `until`, `place`, `timeZone`, `people` (`name`, `address`, `essential`),
-`considered`, `ruledOut`, `notes`, `titlesOnly` (the names read through free/busy), `topic` and `related` (with
+`considered`, `ruledOut`, `notes`, `titlesOnly` (the names read through free/busy), `roomsFrom` (`directory`,
+`settings`, or null when no room was looked for), `roomOnly`, `topic` and `related` (with
 `--topic`: each `subject`, `start`, `end`, `organizer` (null for titles only) and `people`, who of those asked has
 it), and `candidates`: each with `start`, `end`, `latestStart` (null unless collapsed), `pastBy`, `ownerLocation` (your work
-plan: `office`, `remote`, `timeOff`, or null), `lunch`, `people` (`name`, `address`, `essential`, `readable`,
+plan: `office`, `remote`, `timeOff`, or null), `roomSought` (a room was looked for: your office day, in person or
+either), `room` (`name`, `address`, `capacity`, `floor`; null when none was free that fits, or none was sought),
+`lunch`, `people` (`name`, `address`, `essential`, `readable`,
 `titlesOnly`, `free`, `items`: `subject` (null when not visible), `start`, `end`, `label`, `why`, `rule`, `detailsVisible`) and
 `gives` (a line for each thing in the way).
 
@@ -448,6 +484,7 @@ log_file = "..."                     # optional; default %LOCALAPPDATA%\calendar
 time_zone = "GMT Standard Time"      # optional (a Windows name); default this PC's
 lookup_scope = "User.ReadBasic.All"  # optional: the permission for name lookups (User.Read.All works too)
 free_busy_scope = "Calendars.Read"   # optional: the permission free/busy is read with, for a calendar refused in full
+rooms_scope = "Place.Read.All"       # optional: the permission the directory's meeting rooms are read with (slots)
 calendar_months_ahead = 3            # optional (1-24): how far ahead `contacts` looks for the next one booked, in
                                      # calendar months, usually from the base; [contacts] lookahead_days wins over it
 

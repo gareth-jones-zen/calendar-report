@@ -12,7 +12,20 @@ namespace CalendarReport;
 public sealed partial class SlotSettings
 {
     private static readonly string[] Keys =
-        ["rules", "hours", "lunch", "step_minutes", "max_candidates", "per_day", "clean_extra", "past_by_days", "org_domain"];
+        ["rules", "hours", "lunch", "step_minutes", "max_candidates", "per_day", "clean_extra", "past_by_days", "org_domain",
+         "rooms", "room_floors", "room_prefer"];
+
+    private static readonly string[] RoomKeys = ["name", "address", "capacity", "floor"];
+
+    /// <summary>[[slots.rooms]] (0.10.0): the meeting rooms, used when the directory's can't be read (rooms_scope not
+    /// granted), and filling in a capacity or floor the directory leaves blank.</summary>
+    public IReadOnlyList<Room> Rooms { get; init; } = [];
+
+    /// <summary>room_floors (0.10.0): floors whose rooms come first, in this order (GJ: the third floor first).</summary>
+    public IReadOnlyList<string> RoomFloors { get; init; } = [];
+
+    /// <summary>room_prefer (0.10.0): rooms whose name or address matches come next, before the rest.</summary>
+    public Regex? RoomPrefer { get; init; }
 
     public string Rules { get; init; } = "slots";
     public TimeSpan HoursFrom { get; init; } = TimeSpan.FromHours(9);
@@ -91,6 +104,51 @@ public sealed partial class SlotSettings
             ? v as string is { Length: > 0 } t ? t : throw Bad($"slots.{key} should be a non-empty string.")
             : null;
 
+        var rooms = new List<Room>();
+        if (table.TryGetValue("rooms", out var r))
+        {
+            if (r is not TomlTableArray list)
+                throw Bad("slots.rooms should be a list of [[slots.rooms]] tables.");
+            var n = 0;
+            foreach (var room in list)
+            {
+                n++;
+                foreach (var key in room.Keys)
+                    if (!RoomKeys.Contains(key))
+                        throw Bad($"unknown setting '{key}' in [[slots.rooms]] {n} (known: {string.Join(", ", RoomKeys)}).");
+                string Required(string key) => room.TryGetValue(key, out var v) && v is string { Length: > 0 } s
+                    ? s.Trim() : throw Bad($"[[slots.rooms]] {n}: {key} should be a non-empty string.");
+                int? capacity = !room.TryGetValue("capacity", out var c) ? null
+                    : c is long l && l is >= 1 and <= 1000 ? (int)l : throw Bad($"[[slots.rooms]] {n}: capacity should be a whole number from 1 to 1000.");
+                string? floor = !room.TryGetValue("floor", out var f) ? null
+                    : f is string { Length: > 0 } fs ? fs.Trim() : f is long fl ? fl.ToString(CultureInfo.InvariantCulture)
+                    : throw Bad($"[[slots.rooms]] {n}: floor should be a string, such as \"3\".");
+                var address = Required("address");
+                if (!address.Contains('@'))
+                    throw Bad($"[[slots.rooms]] {n}: address should be the room's email address.");
+                rooms.Add(new Room(Required("name"), address, capacity, floor));
+            }
+        }
+        var floors = new List<string>();
+        if (table.TryGetValue("room_floors", out var fv))
+        {
+            if (fv is not TomlArray array || array.Any(x => x is not (string { Length: > 0 } or long)))
+                throw Bad("slots.room_floors should be a list of floors, such as [\"3\", \"2\"].");
+            floors.AddRange(array.Select(x => x is long l ? l.ToString(CultureInfo.InvariantCulture) : ((string)x!).Trim()));
+        }
+        Regex? prefer = null;
+        if (Text("room_prefer") is { } pattern)
+        {
+            try
+            {
+                prefer = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            }
+            catch (ArgumentException error)
+            {
+                throw Bad($"slots.room_prefer isn't a valid regular expression: {error.Message}");
+            }
+        }
+
         var hours = Range("hours");
         var lunch = Range("lunch");
         return new SlotSettings
@@ -106,6 +164,9 @@ public sealed partial class SlotSettings
             CleanExtra = Whole("clean_extra", 3, 0, 20),
             PastByDays = Whole("past_by_days", 5, 0, 30),
             OrgDomain = Text("org_domain"),
+            Rooms = rooms,
+            RoomFloors = floors,
+            RoomPrefer = prefer,
         };
     }
 }
@@ -113,7 +174,7 @@ public sealed partial class SlotSettings
 /// <summary>What `slots` was asked for: the people (the owner always among the essential), how long, and when.</summary>
 public sealed record SlotRequest(
     IReadOnlyList<Person> Essential, IReadOnlyList<Person> Optional, int Minutes, DateTime From, DateTime By,
-    DateTime Until, string Place, int MaxCandidates, string? Topic = null);
+    DateTime Until, string Place, int MaxCandidates, string? Topic = null, bool RoomOnly = false);
 
 /// <summary>Something in the way for one person at a candidate time: its subject (when visible), its time, how
 /// easily it gives (fixed, soft or movable) and why, and which rule said so.</summary>
@@ -132,7 +193,8 @@ public sealed record SlotPerson(Person Person, bool Essential, bool Readable, IR
 /// <summary>A candidate time. LatestStart (0.8.0): adjacent starts with exactly the same things in the way are one
 /// candidate, Start being the earliest of them and LatestStart the last (null when there's only one).</summary>
 public sealed record SlotCandidate(DateTime Start, DateTime End, bool PastBy, string? OwnerLocation, bool Lunch,
-    IReadOnlyList<SlotPerson> People, DateTime? LatestStart = null, string Section = "by-day")
+    IReadOnlyList<SlotPerson> People, DateTime? LatestStart = null, string Section = "by-day", bool RoomSought = false,
+    Room? Room = null)
 {
     /// <summary>Nothing in anyone's way (everyone readable and free) and not over lunch.</summary>
     public bool Clean => !Lunch && People.All(p => p.Free);
@@ -143,6 +205,7 @@ public sealed record SlotCandidate(DateTime Start, DateTime End, bool PastBy, st
             .. People.SelectMany(p => p.Items.Select(i =>
                 $"{p.Person.Name}{(p.Essential ? "" : " (optional)")}: {i.Subject ?? "busy (no details visible)"} ({i.Label}: {i.Why})")),
             .. Lunch ? new[] { "everyone: over lunch (soft)" } : [],
+            .. RoomSought && Room is null ? new[] { "room: no room free that fits" } : [],
         ];
 }
 
@@ -152,7 +215,7 @@ public sealed record RelatedMeeting(string Subject, DateTime Start, DateTime End
 
 public sealed record SlotsReport(SlotRequest Request, string TimeZone, int Considered, int RuledOut,
     IReadOnlyList<SlotCandidate> Candidates, IReadOnlyList<string> Notes, IReadOnlyList<RelatedMeeting>? Related = null,
-    IReadOnlyList<string>? TitlesOnly = null);
+    IReadOnlyList<string>? TitlesOnly = null, string? RoomsFrom = null);
 
 /// <summary>`slots`: candidate times for a meeting with several people, and for each person what's in the way,
 /// labelled fixed, soft or movable by rules (0.7.0; assistant/designs/meeting-slots). It only reads, and only prints:
@@ -283,19 +346,92 @@ public static class Slots
             notes.Insert(0, $"No candidates on {string.Join(", ", skippedDays)}.");
 
         var inPerson = request.Place == "in-person";
+        string? roomsFrom = null;
+        if (request.Place is "in-person" or "either" && kept.Any(c => c.OwnerLocation == "office"))
+            (kept, roomsFrom) = WithRooms(kept, config, source, everyone.Count, from, to, notes);
         var sorted = Collapse(kept, settings.StepMinutes)
             .OrderBy(c => Math.Max(c.People.Where(p => p.Essential).Select(p => p.Worst).DefaultIfEmpty(0).Max(), c.Lunch ? 2 : 0))
             .ThenBy(c => c.People.Count(p => p.Essential && p.Items.Count > 0))
             .ThenBy(c => c.PastBy)
             .ThenBy(c => c.People.Count(p => !p.Essential && p.Worst == 3))
             .ThenBy(c => c.People.Sum(p => p.Items.Count(i => i.Label == "soft")))
+            .ThenBy(c => inPerson && c.OwnerLocation == "office" && c.Room is null)
             .ThenBy(c => inPerson && c.OwnerLocation != "office")
             .ThenBy(c => c.Start)
             .ToList();
+        if (request.RoomOnly)
+        {
+            var before = sorted.Count;
+            sorted = [.. sorted.Where(c => c.Room is not null)];
+            if (before > sorted.Count)
+                notes.Add($"--room-only: {before - sorted.Count} time{(before - sorted.Count == 1 ? "" : "s")} left out with no room "
+                          + "(a remote day, or no room free that fits).");
+        }
         var chosen = Choose(sorted, settings, request.MaxCandidates);
         var related = request.Topic is { } topic ? Related(topic, everyone.Select(p => p.Person), calendars) : null;
         return new SlotsReport(request, config.TimeZone.Id, considered, ruledOut, chosen, notes, related,
-            [.. everyone.Where(p => titlesOnly.Contains(p.Person.Address)).Select(p => p.Person.Name)]);
+            [.. everyone.Where(p => titlesOnly.Contains(p.Person.Address)).Select(p => p.Person.Name)], roomsFrom);
+    }
+
+    /// <summary>The rooms to choose from (0.10.0): the directory's (Graph /places), with a capacity or floor it leaves
+    /// blank filled in from [[slots.rooms]] and any room only the settings name added; or, when the directory's are
+    /// refused, the settings' alone. Which it was: "directory" or "settings".</summary>
+    internal static (IReadOnlyList<Room> Rooms, string From) RoomList(Config config, ISource source)
+    {
+        var listed = config.Slots.Rooms;
+        if (source.Rooms() is not { } directory)
+            return (listed, "settings");
+        var byAddress = listed.ToDictionary(r => r.Address, StringComparer.OrdinalIgnoreCase);
+        var merged = directory.Select(r => byAddress.TryGetValue(r.Address, out var s)
+            ? r with { Capacity = r.Capacity ?? s.Capacity, Floor = r.Floor ?? s.Floor } : r).ToList();
+        merged.AddRange(listed.Where(s => !merged.Any(r => string.Equals(r.Address, s.Address, StringComparison.OrdinalIgnoreCase))));
+        return (merged, "directory");
+    }
+
+    /// <summary>The order rooms are offered in: room_floors first (in their order), then rooms matching room_prefer,
+    /// then the smallest that fits (a room of unknown size last), then by name.</summary>
+    internal static List<Room> RankRooms(IEnumerable<Room> rooms, SlotSettings settings) =>
+        [.. rooms
+            .OrderBy(r => r.Floor is { } f && settings.RoomFloors.Contains(f, StringComparer.OrdinalIgnoreCase)
+                ? settings.RoomFloors.ToList().FindIndex(x => string.Equals(x, f, StringComparison.OrdinalIgnoreCase))
+                : settings.RoomFloors.Count)
+            .ThenBy(r => settings.RoomPrefer is { } p && (p.IsMatch(r.Name) || p.IsMatch(r.Address)) ? 0 : 1)
+            .ThenBy(r => r.Capacity ?? int.MaxValue)
+            .ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>A room for each candidate on one of the owner's office days (0.10.0; GJ: a room only when he's in the
+    /// office): the first in <see cref="RankRooms"/> order that seats everyone (a blank capacity counts as fitting) and
+    /// is free for the whole meeting; none is a catch. Done before adjacent starts are collapsed, so a run of starts
+    /// shares its room. Remote days get no room.</summary>
+    private static (List<SlotCandidate>, string?) WithRooms(List<SlotCandidate> candidates, Config config, ISource source,
+        int size, DateTime from, DateTime to, List<string> notes)
+    {
+        var (rooms, roomsFrom) = RoomList(config, source);
+        if (rooms.Count == 0)
+        {
+            notes.Add(roomsFrom == "settings"
+                ? $"No meeting rooms known: the directory's can't be read ({config.RoomsScope} not granted) and the settings list none ([[slots.rooms]])."
+                : "No meeting rooms known: the directory lists none and the settings list none ([[slots.rooms]]).");
+            return (candidates, roomsFrom);
+        }
+        if (roomsFrom == "settings")
+            notes.Add($"Room sizes from settings ({config.RoomsScope} not granted).");
+        var fitting = RankRooms(rooms.Where(r => r.Capacity is null || r.Capacity >= size), config.Slots);
+        if (fitting.Count == 0)
+            notes.Add($"No room known seats {size}.");
+        var bookings = fitting.Count == 0
+            ? new Dictionary<string, IReadOnlyList<(DateTime Start, DateTime End)>?>()
+            : source.RoomBookings([.. fitting.Select(r => r.Address)], from, to);
+        var unreadable = fitting.Where(r => bookings.GetValueOrDefault(r.Address) is null).Select(r => r.Name).ToList();
+        if (unreadable.Count > 0)
+            notes.Add($"Rooms whose bookings can't be read, so not offered: {string.Join(", ", unreadable)}.");
+
+        bool Free(Room room, DateTime start, DateTime end) =>
+            bookings.GetValueOrDefault(room.Address) is { } booked && !booked.Any(b => b.Start < end && b.End > start);
+
+        var result = candidates.Select(c => c.OwnerLocation != "office" ? c
+            : c with { RoomSought = true, Room = fitting.FirstOrDefault(r => Free(r, c.Start, c.End)) }).ToList();
+        return (result, roomsFrom);
     }
 
     /// <summary>What's shown (0.9.0): the best of each day, sooner days first (inside the by date, then past it), so a
@@ -336,7 +472,7 @@ public static class Slots
     internal static List<SlotCandidate> Collapse(IReadOnlyList<SlotCandidate> candidates, int stepMinutes)
     {
         static string Key(SlotCandidate c) => string.Join("|",
-            [c.Lunch.ToString(), c.PastBy.ToString(), c.OwnerLocation ?? "",
+            [c.Lunch.ToString(), c.PastBy.ToString(), c.OwnerLocation ?? "", c.RoomSought.ToString(), c.Room?.Address ?? "",
              .. c.People.Select(p => p.Person.Address + ":" + p.Readable + ":" + string.Join(",",
                  p.Items.Select(i => $"{i.Subject}@{i.Start:yyyyMMddHHmm}-{i.End:yyyyMMddHHmm}={i.Label}")))]);
         var result = new List<SlotCandidate>();
@@ -494,6 +630,8 @@ public static class Slots
             ["ruledOut"] = report.RuledOut,
             ["notes"] = new JsonArray([.. report.Notes.Select(n => (JsonNode)JsonValue.Create(n))]),
             ["titlesOnly"] = new JsonArray([.. (report.TitlesOnly ?? []).Select(n => (JsonNode)JsonValue.Create(n))]),
+            ["roomsFrom"] = report.RoomsFrom,
+            ["roomOnly"] = r.RoomOnly,
             ["topic"] = r.Topic,
             ["related"] = report.Related is null ? null : new JsonArray([.. report.Related.Select(m => (JsonNode)new JsonObject
             {
@@ -511,6 +649,14 @@ public static class Slots
                 ["latestStart"] = c.LatestStart is { } latest ? Time(latest) : null,
                 ["pastBy"] = c.PastBy,
                 ["ownerLocation"] = c.OwnerLocation,
+                ["roomSought"] = c.RoomSought,
+                ["room"] = c.Room is { } room ? new JsonObject
+                {
+                    ["name"] = room.Name,
+                    ["address"] = room.Address,
+                    ["capacity"] = room.Capacity,
+                    ["floor"] = room.Floor,
+                } : null,
                 ["lunch"] = c.Lunch,
                 ["people"] = new JsonArray([.. c.People.Select(p => (JsonNode)new JsonObject
                 {
@@ -570,6 +716,10 @@ public static class Slots
                 b.Append("  (past the by date)");
             if (c.Lunch)
                 b.Append("  (over lunch)");
+            if (c.Room is { } room)
+                b.Append(En, $"  room: {room.Name}{(room.Capacity is { } seats ? $" ({seats})" : "")}");
+            else if (c.RoomSought)
+                b.Append("  room: no room free that fits");
             b.Append('\n');
             foreach (var p in c.People)
             {

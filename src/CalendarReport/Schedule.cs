@@ -65,7 +65,20 @@ public interface ISource
 
     /// <summary>A recurring meeting's pattern, from its series master in their calendar; null if it can't be read.</summary>
     Recurrence? Series(Person person, string seriesMasterId);
+
+    /// <summary>The organisation's meeting rooms, from the directory's places (Graph's /places, 0.10.0); null when
+    /// that's refused (the rooms permission isn't granted), so the settings' list is used instead.</summary>
+    IReadOnlyList<Room>? Rooms();
+
+    /// <summary>When each of these rooms is booked, through free/busy (getSchedule), by address; null for a room whose
+    /// schedule can't be read.</summary>
+    IReadOnlyDictionary<string, IReadOnlyList<(DateTime Start, DateTime End)>?> RoomBookings(
+        IReadOnlyList<string> addresses, DateTime from, DateTime to);
 }
+
+/// <summary>A meeting room (0.10.0): its name and address, how many it seats (null: not known, which counts as
+/// fitting), its floor (as the directory or the settings give it) and building.</summary>
+public sealed record Room(string Name, string Address, int? Capacity, string? Floor, string? Building = null);
 
 /// <summary>Microsoft Graph. Reading someone else's calendar needs Calendars.Read.Shared and their calendar shared
 /// with you (as in Outlook). Times come back in the report's time zone (Prefer: outlook.timezone).
@@ -151,11 +164,6 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
         for (var start = from; start < to; start = start.AddDays(FreeBusyChunkDays))
         {
             var end = start.AddDays(FreeBusyChunkDays) < to ? start.AddDays(FreeBusyChunkDays) : to;
-            JsonObject When(DateTime t) => new()
-            {
-                ["dateTime"] = t.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
-                ["timeZone"] = config.TimeZone.Id,
-            };
             var body = new JsonObject
             {
                 ["schedules"] = new JsonArray(address),
@@ -175,6 +183,87 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
         }
         return events.DistinctBy(e => (e.Start, e.End, e.Subject)).OrderBy(e => e.Start).ToList();
     }
+
+    public IReadOnlyList<Room>? Rooms()
+    {
+        try
+        {
+            // Never a browser: a permission not yet granted is a fallback to the settings, not a sign-in.
+            graph.TokenAsync([config.RoomsScope], interactive: false).GetAwaiter().GetResult();
+            return graph.PagesAsync("/places/microsoft.graph.room?$top=100", [config.RoomsScope], Headers).ToBlockingEnumerable()
+                .OfType<JsonObject>().Select(ReadRoom).Where(r => r.Address.Length > 0)
+                .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch (SignInNeededException)
+        {
+            return null;
+        }
+        catch (GraphRequestException error) when ((int)error.Status is 401 or 403)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A Graph room place.</summary>
+    internal static Room ReadRoom(JsonObject o)
+    {
+        int? capacity = o["capacity"] is JsonValue c && c.TryGetValue<int>(out var n) && n > 0 ? n : null;
+        string? floor = o["floorNumber"] is JsonValue f && f.TryGetValue<int>(out var number) ? number.ToString(CultureInfo.InvariantCulture)
+            : Text(o, "floorLabel") is { Length: > 0 } label ? label : null;
+        return new Room(Text(o, "displayName") ?? Text(o, "emailAddress") ?? "", Text(o, "emailAddress") ?? "", capacity, floor,
+            Text(o, "building") is { Length: > 0 } building ? building : null);
+    }
+
+    /// <summary>getSchedule takes at most 20 schedules a call here (to be safe).</summary>
+    private const int SchedulesPerCall = 20;
+
+    public IReadOnlyDictionary<string, IReadOnlyList<(DateTime Start, DateTime End)>?> RoomBookings(
+        IReadOnlyList<string> addresses, DateTime from, DateTime to)
+    {
+        var found = new Dictionary<string, List<(DateTime, DateTime)>?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var batch in addresses.Distinct(StringComparer.OrdinalIgnoreCase).Chunk(SchedulesPerCall))
+        {
+            for (var start = from; start < to; start = start.AddDays(FreeBusyChunkDays))
+            {
+                var end = start.AddDays(FreeBusyChunkDays) < to ? start.AddDays(FreeBusyChunkDays) : to;
+                var body = new JsonObject
+                {
+                    ["schedules"] = new JsonArray([.. batch.Select(a => (JsonNode)JsonValue.Create(a))]),
+                    ["startTime"] = When(start),
+                    ["endTime"] = When(end),
+                    ["availabilityViewInterval"] = 15,
+                };
+                var reply = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers)
+                    .GetAwaiter().GetResult();
+                foreach (var schedule in (reply["value"] as JsonArray)?.OfType<JsonObject>() ?? [])
+                {
+                    if (Text(schedule, "scheduleId") is not { } id)
+                        continue;
+                    if (schedule["error"] is JsonObject || schedule["scheduleItems"] is not JsonArray items)
+                    {
+                        found[id] = null;
+                        continue;
+                    }
+                    if (found.TryGetValue(id, out var known) && known is null)
+                        continue;
+                    if (known is null)
+                        found[id] = known = [];
+                    known.AddRange(items.OfType<JsonObject>()
+                        .Where(i => !string.Equals(Text(i, "status"), "free", StringComparison.OrdinalIgnoreCase))
+                        .Select(i => (Time(i["start"]), Time(i["end"]))));
+                }
+            }
+        }
+        return addresses.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(a => a,
+            a => found.TryGetValue(a, out var b) && b is not null ? (IReadOnlyList<(DateTime, DateTime)>?)b.Distinct().OrderBy(x => x.Item1).ToList() : null,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private JsonObject When(DateTime t) => new()
+    {
+        ["dateTime"] = t.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+        ["timeZone"] = config.TimeZone.Id,
+    };
 
     /// <summary>A getSchedule scheduleItem as an event (FreeBusy set). An item from midnight to midnight is all-day.</summary>
     internal static Event ReadScheduleItem(JsonObject item)
