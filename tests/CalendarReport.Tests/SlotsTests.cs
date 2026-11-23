@@ -174,7 +174,7 @@ public sealed class SlotsTests : IDisposable
     public void Per_day_spreads_the_candidates()
     {
         var report = Build(Settings("[slots]\nper_day = 2\n"));
-        Assert.All(report.Candidates.GroupBy(c => c.Start.Date), g => Assert.True(g.Count() <= 2));
+        Assert.All(report.Candidates.Where(c => c.Section == "by-day").GroupBy(c => c.Start.Date), g => Assert.True(g.Count() <= 2));
     }
 
     [Fact]

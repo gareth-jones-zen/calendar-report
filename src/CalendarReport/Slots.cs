@@ -12,7 +12,7 @@ namespace CalendarReport;
 public sealed partial class SlotSettings
 {
     private static readonly string[] Keys =
-        ["rules", "hours", "lunch", "step_minutes", "max_candidates", "per_day", "past_by_days", "org_domain"];
+        ["rules", "hours", "lunch", "step_minutes", "max_candidates", "per_day", "clean_extra", "past_by_days", "org_domain"];
 
     public string Rules { get; init; } = "slots";
     public TimeSpan HoursFrom { get; init; } = TimeSpan.FromHours(9);
@@ -21,7 +21,12 @@ public sealed partial class SlotSettings
     public TimeSpan? LunchTo { get; init; }
     public int StepMinutes { get; init; } = 15;
     public int MaxCandidates { get; init; } = 15;
-    public int PerDay { get; init; } = 3;
+    /// <summary>How many of each day's best candidates the "best per day" list keeps (0.9.0: default 1).</summary>
+    public int PerDay { get; init; } = 1;
+
+    /// <summary>How many clean candidates (nothing in anyone's way, not over lunch) are added under "Clean
+    /// alternatives" when the best-per-day list doesn't already show them (0.9.0).</summary>
+    public int CleanExtra { get; init; } = 3;
     public int PastByDays { get; init; } = 5;
 
     /// <summary>The organisation's domain, for the <c>external</c> test; by default the owner's own.</summary>
@@ -97,7 +102,8 @@ public sealed partial class SlotSettings
             LunchTo = lunch?.To,
             StepMinutes = Whole("step_minutes", 15, 5, 240),
             MaxCandidates = Whole("max_candidates", 15, 1, 100),
-            PerDay = Whole("per_day", 3, 1, 50),
+            PerDay = Whole("per_day", 1, 1, 50),
+            CleanExtra = Whole("clean_extra", 3, 0, 20),
             PastByDays = Whole("past_by_days", 5, 0, 30),
             OrgDomain = Text("org_domain"),
         };
@@ -126,8 +132,11 @@ public sealed record SlotPerson(Person Person, bool Essential, bool Readable, IR
 /// <summary>A candidate time. LatestStart (0.8.0): adjacent starts with exactly the same things in the way are one
 /// candidate, Start being the earliest of them and LatestStart the last (null when there's only one).</summary>
 public sealed record SlotCandidate(DateTime Start, DateTime End, bool PastBy, string? OwnerLocation, bool Lunch,
-    IReadOnlyList<SlotPerson> People, DateTime? LatestStart = null)
+    IReadOnlyList<SlotPerson> People, DateTime? LatestStart = null, string Section = "by-day")
 {
+    /// <summary>Nothing in anyone's way (everyone readable and free) and not over lunch.</summary>
+    public bool Clean => !Lunch && People.All(p => p.Free);
+
     /// <summary>What would have to give, a line each.</summary>
     public IReadOnlyList<string> Gives =>
         [
@@ -283,21 +292,42 @@ public static class Slots
             .ThenBy(c => inPerson && c.OwnerLocation != "office")
             .ThenBy(c => c.Start)
             .ToList();
-        var chosen = new List<SlotCandidate>();
-        var perDay = new Dictionary<DateTime, int>();
-        foreach (var c in sorted)
-        {
-            if (chosen.Count >= request.MaxCandidates)
-                break;
-            var n = perDay.GetValueOrDefault(c.Start.Date);
-            if (n >= settings.PerDay)
-                continue;
-            perDay[c.Start.Date] = n + 1;
-            chosen.Add(c);
-        }
+        var chosen = Choose(sorted, settings, request.MaxCandidates);
         var related = request.Topic is { } topic ? Related(topic, everyone.Select(p => p.Person), calendars) : null;
         return new SlotsReport(request, config.TimeZone.Id, considered, ruledOut, chosen, notes, related,
             [.. everyone.Where(p => titlesOnly.Contains(p.Person.Address)).Select(p => p.Person.Name)]);
+    }
+
+    /// <summary>What's shown (0.9.0): the best of each day, sooner days first (inside the by date, then past it), so a
+    /// fair trade-off this week isn't squeezed out by cleaner times next week; then, under "Clean alternatives", up to
+    /// clean_extra of the clean candidates (nothing in anyone's way) the days list doesn't already show, sooner first.
+    /// max_candidates caps the whole list, leaving room for the clean ones. <paramref name="sorted"/> is in quality
+    /// order (movable before soft, fewer people affected, and so on), which also orders each day's own picks.</summary>
+    internal static List<SlotCandidate> Choose(IReadOnlyList<SlotCandidate> sorted, SlotSettings settings, int maxCandidates)
+    {
+        var byDay = sorted
+            .GroupBy(c => c.Start.Date)
+            .OrderBy(g => g.First().PastBy)
+            .ThenBy(g => g.Key)
+            .SelectMany(g => g.Take(settings.PerDay))
+            .ToList();
+        var cleanPool = sorted.Where(c => c.Clean).OrderBy(c => c.PastBy).ThenBy(c => c.Start).ToList();
+        // Room for the clean ones is reserved against what the cap leaves of the days list: a clean time is only
+        // "already shown" if it survives the cut.
+        var reserve = 0;
+        List<SlotCandidate> days;
+        while (true)
+        {
+            days = byDay.Take(Math.Max(1, maxCandidates - reserve)).ToList();
+            var want = Math.Min(settings.CleanExtra, cleanPool.Count(c => !days.Contains(c)));
+            if (want <= reserve)
+                break;
+            reserve = want;
+        }
+        var room = Math.Max(0, maxCandidates - days.Count);
+        var clean = cleanPool.Where(c => !days.Contains(c)).Take(Math.Min(settings.CleanExtra, room))
+            .Select(c => c with { Section = "clean" });
+        return [.. days, .. clean];
     }
 
     /// <summary>Adjacent starts on a day (a step apart) with exactly the same things in the way, the same lunch and
@@ -475,6 +505,7 @@ public static class Slots
             })]),
             ["candidates"] = new JsonArray([.. report.Candidates.Select(c => (JsonNode)new JsonObject
             {
+                ["section"] = c.Section,
                 ["start"] = Time(c.Start),
                 ["end"] = Time(c.End),
                 ["latestStart"] = c.LatestStart is { } latest ? Time(latest) : null,
@@ -520,8 +551,16 @@ public static class Slots
         foreach (var note in report.Notes)
             b.Append(note).Append('\n');
         var n = 0;
+        string? section = null;
         foreach (var c in report.Candidates)
         {
+            if (c.Section != section)
+            {
+                b.Append('\n').Append(c.Section == "clean"
+                    ? "Clean alternatives (nothing in anyone's way):"
+                    : "Best per day, sooner days first:").Append('\n');
+                section = c.Section;
+            }
             b.Append('\n').Append(En, $"{++n}. {c.Start:ddd d MMM HH:mm}-{c.End:HH:mm}");
             if (c.LatestStart is { } latestStart)
                 b.Append(En, $" (or start up to {latestStart:HH:mm})");

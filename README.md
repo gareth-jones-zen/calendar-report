@@ -320,7 +320,13 @@ calendar-report slots ann@example.com --optional bob@example.com --minutes 30 --
 - **The sift:** a time where anyone essential has something fixed is dropped (the count is shown). The rest are
   sorted: those where what's in the way is movable before soft; fewer people affected; inside `--by` before after it;
   fewer optional people unable to come; fewer soft items; your office days first for in-person; then earliest.
-  `lunch` makes a time over lunch count as soft. At most `per_day` from one day, so the options spread out.
+  `lunch` makes a time over lunch count as soft.
+- **What's shown** (0.9.0): **the best of each day, sooner days first** (`per_day`, default 1): every day inside
+  `--by` in date order, then the days past it. Then, under **"Clean alternatives"**, up to `clean_extra` (default 3)
+  times with nothing in anyone's way that the days list doesn't already show, sooner first. `max_candidates` caps the
+  whole list and leaves room for the clean ones. **Why:** ranking every clean time first let a run of clean days next
+  week fill the list and push out this week's fair trade-offs (a 1:1 of yours that could move, a stand-up that could be
+  gone over), and sooner often matters more than clean. JSON gives each candidate a `section`: `by-day` or `clean`.
 
 **The built-in labels** (used when the settings have no `[[rules.slots]]`), first match wins:
 
@@ -374,7 +380,8 @@ hours = "09:00-17:00"     # candidates within these (default)
 lunch = "12:00-13:30"     # a time over lunch is soft (default: none)
 step_minutes = 15         # the grid (default 15 since 0.8.0; 30 before)
 max_candidates = 15       # default
-per_day = 3               # at most this many from one day (default)
+per_day = 1               # each day's best, this many (default 1 since 0.9.0; 3 before)
+clean_extra = 3           # clean alternatives added after the days (default)
 past_by_days = 5          # working days past --by that --until defaults to (default)
 rules = "slots"           # the rule list (default)
 org_domain = "example.com"   # for external (default: your own address's domain)
