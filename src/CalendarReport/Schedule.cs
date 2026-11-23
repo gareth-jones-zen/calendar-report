@@ -171,7 +171,7 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
                 ["endTime"] = When(end),
                 ["availabilityViewInterval"] = 15,
             };
-            var found = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers)
+            var found = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers, policy: GraphRetryPolicy.Read)
                 .GetAwaiter().GetResult();
             var schedule = (found["value"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
             if (schedule is null || schedule["error"] is JsonObject || schedule["scheduleItems"] is not JsonArray items)
@@ -233,7 +233,7 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
                     ["endTime"] = When(end),
                     ["availabilityViewInterval"] = 15,
                 };
-                var reply = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers)
+                var reply = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers, policy: GraphRetryPolicy.Read)
                     .GetAwaiter().GetResult();
                 foreach (var schedule in (reply["value"] as JsonArray)?.OfType<JsonObject>() ?? [])
                 {

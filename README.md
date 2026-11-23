@@ -37,6 +37,9 @@ sign-in shared with another tool usually already holds. **Meeting rooms** (`slot
 directory with **Place.Read.All** (`rooms_scope`), which needs an admin's consent; it's only ever asked for silently,
 and without it the rooms come from the settings (`[[slots.rooms]]`).
 
+**It only reads**: nothing is ever written to a calendar. Every call, the free/busy `getSchedule` POSTs included, is
+retried on a 429, a 5xx or a dropped connection.
+
 **A colleague's calendar that isn't shared in full** (0.8.0): many organisations' default sharing lets Outlook show
 a colleague's meetings with their titles, which an app can only read through free/busy (Graph's `getSchedule`), not
 the calendar itself (that answers 403). So when a calendar is refused, `events`, `summary` and `slots` read that
