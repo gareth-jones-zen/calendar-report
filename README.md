@@ -10,6 +10,7 @@ calendar-report events team --work-plan --format csv --out week.csv
 calendar-report work-plan --days 14
 calendar-report summary --view team --weeks 4
 calendar-report contacts --flagged
+calendar-report free "Ann Smith"
 ```
 
 ```
@@ -35,7 +36,11 @@ look people up by name) on Microsoft's "Graph Command Line Tools" app. The first
 organisations need an admin to approve. **Free/busy** (below) needs **Calendars.Read** (`free_busy_scope`), which a
 sign-in shared with another tool usually already holds. **Meeting rooms** (`slots`, 0.10.0) are read from the
 directory with **Place.Read.All** (`rooms_scope`), which needs an admin's consent; it's only ever asked for silently,
-and without it the rooms come from the settings (`[[slots.rooms]]`).
+and without it the rooms come from the settings (`[[slots.rooms]]`). **Teams status** (`free`, 0.12.0) needs
+**Presence.Read.All** (`[free] presence_scope`), asked for silently only; organisations that restrict user consent need
+an admin to approve it (`sign-in --presence` raises the request). Without it `free` still answers, and says the status
+is waiting on IT. **Automatic replies** (`free`) are read through MailTips with **Mail.Read** (`[free]
+auto_reply_scope`), also silently.
 
 **It only reads**: nothing is ever written to a calendar. Every call, the free/busy `getSchedule` POSTs included, is
 retried on a 429, a 5xx or a dropped connection.
@@ -56,11 +61,13 @@ calendar-report work-plan [PEOPLE...]           where they're working each day
 calendar-report summary [PEOPLE...]             where their time went, by week (see Summaries)
 calendar-report contacts [PEOPLE...]            when you last met, and next meet, the people in your rings (see Contacts)
 calendar-report slots PEOPLE... --minutes N     times for a meeting with them, and what's in the way (see Slots)
+calendar-report free PEOPLE...                  when they're free today for a quick call, and their Teams status (see Free to call)
 calendar-report rooms                           the meeting rooms slots chooses from, best first (see Slots)
 calendar-report who PEOPLE...                   who those words mean
 calendar-report groups                          the groups in the settings
 calendar-report config                          create the settings file and say where it is
 calendar-report sign-in                         sign in to Microsoft (once; opens a browser)
+calendar-report sign-in --presence              ask for Teams status (Presence.Read.All) on its own (see Free to call)
 ```
 
 **PEOPLE** are `me` (the default), addresses, names (looked up in your organisation's directory: a full name, or
@@ -438,6 +445,113 @@ either), `room` (`name`, `address`, `capacity`, `floor`; null when none was free
 `titlesOnly`, `free`, `items`: `subject` (null when not visible), `start`, `end`, `label`, `why`, `rule`, `detailsVisible`) and
 `gives` (a line for each thing in the way).
 
+## Free to call
+
+`free` (0.12.0) answers "can I call them?" in a few lines: their Teams status, where they are now by their calendar,
+and the gaps left today of `min_minutes` or more (default 10), with whether you're free in each. **It only reads and
+only prints: no meeting titles are printed, nothing is sent, and nothing about anyone is written anywhere** (the log
+gets one line per run: how many people were named and how it ended).
+
+```
+calendar-report free "Ann Smith"                       today's gaps from now
+calendar-report free "Ann Smith" --now                 status, now and the next gap only
+calendar-report free ann@example.com --day tomorrow    that day's gaps (no Teams status: it's only ever "now")
+calendar-report free team --json                       a group: one block each
+calendar-report free "Ann Smith" --chat "the IPv4 plan"   also a pre-filled Teams chat link
+```
+
+```
+Ann Smith · Tue 24 Nov, 13:05
+  Teams:    shows Busy, in a meeting · "Back at 2"
+  Now:      busy (in a meeting or busy) until 13:30
+  Free today (10 min or more, within 08:30-17:30):
+    13:30-14:00   30 min   you're in something until 13:55
+    16:00-17:30   90 min   you're free 16:00-16:30, 17:00-17:30
+                        their own block 16:00-17:00: could be interrupted for something quick
+  Phone:    0161 000 0000 (work)
+  Call:     https://teams.microsoft.com/l/call/0/0?users=ann@example.com
+```
+
+| Option | |
+|---|---|
+| `PEOPLE` | Names, addresses or groups, as elsewhere. A name matching two people lists both and stops |
+| `--now` | Status, now and the next gap only |
+| `--day D` | `today` (the default), `tomorrow` or `yyyy-mm-dd`: that whole working day. Not with `--now` |
+| `--min N` | The shortest gap, in minutes (default `[free] min_minutes`) |
+| `--lunch` | Look past their lunch entries: a gap over one is shown and marked "over a lunch entry" |
+| `--no-presence` | Don't read Teams status |
+| `--chat TOPIC` | Also a Teams chat link with "Have you got 5 minutes for a quick call about TOPIC?" filled in. **You send it**: the link opens Teams with the message typed, and nothing is sent until you do |
+| `--format table\|json`, `--json` | The table, or JSON |
+
+**How the gaps are found:**
+
+- **Their calendar** in full where it's shared, otherwise their free/busy (titles only), as elsewhere.
+- **Their working hours** come from their Outlook settings (free/busy's `workingHours`: days, start and end, converted to
+  your time zone); when those can't be read, `[slots] hours` on weekdays. A day outside their working days says so.
+- **What closes a gap:** busy, tentative and out of office. Show-as free and working elsewhere don't, nor do meetings
+  they declined (full calendars only), nor anything a rule in `[free] rules` (default `slots`) counts as `skip`.
+- **Lunch, travel and the like are away:** a rule's `count = "not-working"` (and `"leave"`) closes a gap. A not-working
+  entry whose subject says lunch, or that starts in `[slots] lunch`, is a **lunch entry**, which `--lunch` looks past.
+- **Their own blocks and focus time don't close a gap**: they're listed in it as "could be interrupted for something
+  quick". Their own is an entry with no one else invited (only visible on a calendar shared in full); focus time is a
+  subject matching `[free] focus`.
+- **Leave and bank holidays** (the shared `[leave]` rules): the day says "On leave today (back Thu 26 Nov)" and stops;
+  half a day's leave takes that half out.
+- **Today, nothing before now is listed**: a gap already under way starts now.
+- **Your side:** each gap says where you're free too (stretches of five minutes or more). Your own blocks count as free
+  (you can step out of one); your travel, lunch and out-of-office entries don't.
+
+**Teams status** (today only): availability and activity ("Busy, in a meeting"), their status message, and where
+they're working when Teams knows. It's read with `presence_scope` **asked for silently only**: never a browser, never a
+failed run, and the shared sign-in is left as it was. Then, with the calendar, one line where they disagree or it
+matters: "On a call now (not in the calendar)", "The calendar says busy until 14:30, but Teams shows Available: the
+meeting may have ended", "Do not disturb: a chat rather than a call", "Away from their desk", "Offline in Teams (may be
+on mobile, or not at a desk)". Teams' own status lags by a few minutes, and "Available" isn't "happy to take a call":
+the answer says "shows", not "is".
+
+**Their automatic reply:** when it's on, its first line (as anyone emailing them sees it): from Teams' out-of-office
+settings when status can be read, otherwise from MailTips (`auto_reply_scope`, silently).
+
+**Contact:** a Teams call link (Teams asks before it dials) and the work numbers the directory lists for them
+(`businessPhones`, `mobilePhone`; needs `lookup_scope = "User.Read.All"`). Nothing else: no other source of numbers is
+read.
+
+**Getting Teams status:** run `calendar-report sign-in --presence` at a console. It asks for `presence_scope` on its
+own, so the usual sign-in (and every other tool sharing the token cache) is unaffected whatever the answer. Where the
+organisation restricts consent, the browser shows "Approval required" with a request to send to IT; once they approve,
+`free` shows status by itself, with nothing to install or change.
+
+**When it fails:**
+
+| Failure | What you see |
+|---|---|
+| Presence.Read.All not granted | `Teams:    status waiting on IT (Presence.Read.All not granted yet)`; the rest as usual |
+| Presence refused for them (external, guest, unlicensed) | `Teams:    status not available for them` |
+| Status read failed otherwise | `Teams:    status couldn't be read (the reason)` |
+| Their calendar can't be read at all | "Can't see their calendar (neither in full nor as free/busy)"; status, auto-reply and contact still shown |
+| Their working hours can't be read | `[slots] hours` on weekdays, marked "default hours" |
+| Automatic reply can't be read | No auto-reply line |
+| Sign-in expired | Exit 2, with what to run |
+| Graph slow or throttled | The usual retries; then exit 1 with the reason |
+
+```toml
+[free]
+min_minutes = 10                      # the shortest gap shown (default)
+rules = "slots"                       # the rule list for what's in the way (default; the built-in slot labels without one)
+presence_scope = "Presence.Read.All"  # Teams status, asked for silently only (default)
+auto_reply_scope = "Mail.Read"        # automatic replies through MailTips (default)
+show_phone = true                     # the work numbers the directory lists (default)
+focus = '\bfocus\b'                   # subjects of blocks that could be interrupted (default)
+```
+
+**JSON:** `day`, `now`, `today`, `timeZone`, `minMinutes`, `lunch`, and `people`, each with `name`, `address`,
+`readable`, `titlesOnly`, `dayNote`, `notes`, `workingHours` (`start`, `end`, `from`: `outlook` or `settings`), `now`
+(`state`: free, busy, away, lunch, own-block, before-hours, after-hours, not-working or leave; `until`; `text`),
+`presence` (`state`: shown, not-granted, not-available, failed; `why`, `availability`, `activity`, `text`,
+`statusMessage`, `outOfOffice`, `workLocation`, `note`; null when not asked), `autoReply` (`on`, `firstLine`; null when
+off), `gaps` (`start`, `end`, `minutes`, `ownerFree` stretches, `owner` in words, `soft` own blocks, `overLunch`),
+`phones` (`number`, `type`), `callLink` and `chatLink`.
+
 ## What it reads
 
 - **Events:** every event from `calendarView` between midnight on the first day and midnight after the last, with
@@ -488,6 +602,7 @@ time_zone = "GMT Standard Time"      # optional (a Windows name); default this P
 lookup_scope = "User.ReadBasic.All"  # optional: the permission for name lookups (User.Read.All works too)
 free_busy_scope = "Calendars.Read"   # optional: the permission free/busy is read with, for a calendar refused in full
 rooms_scope = "Place.Read.All"       # optional: the permission the directory's meeting rooms are read with (slots)
+                                     # (free's own permissions are in [free]: see Free to call)
 calendar_months_ahead = 3            # optional (1-24): how far ahead `contacts` looks for the next one booked, in
                                      # calendar months, usually from the base; [contacts] lookahead_days wins over it
 
@@ -496,6 +611,7 @@ team = ["ann@example.com", "Bob Smith"]
 
 # [summary], [view.NAME] and [[rules.NAME]]: see Summaries
 # [contacts], [[contacts.ring]] and [contacts.why]: see Contacts
+# [slots], [[slots.rooms]] and [leave]: see Slots; [free]: see Free to call
 ```
 
 The file is read strictly: an unknown setting, or one of the wrong type, is an error that names it.

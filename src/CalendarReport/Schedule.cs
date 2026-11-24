@@ -74,6 +74,21 @@ public interface ISource
     /// schedule can't be read.</summary>
     IReadOnlyDictionary<string, IReadOnlyList<(DateTime Start, DateTime End)>?> RoomBookings(
         IReadOnlyList<string> addresses, DateTime from, DateTime to);
+
+    /// <summary>Their working hours as their Outlook has them (getSchedule's workingHours, 0.12.0), in the report's
+    /// time zone; null when they can't be read.</summary>
+    WorkingHours? WorkingHours(Person person, DateTime day);
+
+    /// <summary>Their Teams status (0.12.0), with the presence permission asked for silently only: never a browser,
+    /// and never a failure of the run. <paramref name="id"/> is their directory object id when known.</summary>
+    PresenceRead Presence(Person person, string? id);
+
+    /// <summary>Their automatic reply (MailTips, 0.12.0): null when it's off or can't be read; "" when it's on with no
+    /// text; else its first line.</summary>
+    string? AutoReply(Person person);
+
+    /// <summary>What the directory lists for them (0.12.0): object id and work numbers; null when it can't be read.</summary>
+    DirectoryContact? Contact(Person person);
 }
 
 /// <summary>A meeting room (0.10.0): its name and address, how many it seats (null: not known, which counts as
@@ -257,6 +272,158 @@ public sealed class GraphSource(GraphClient graph, Config config) : ISource
         return addresses.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(a => a,
             a => found.TryGetValue(a, out var b) && b is not null ? (IReadOnlyList<(DateTime, DateTime)>?)b.Distinct().OrderBy(x => x.Item1).ToList() : null,
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    public WorkingHours? WorkingHours(Person person, DateTime day)
+    {
+        var address = person.Address == "me" ? MyAddress() : person.Address;
+        var body = new JsonObject
+        {
+            ["schedules"] = new JsonArray(address),
+            ["startTime"] = When(day.Date),
+            ["endTime"] = When(day.Date.AddDays(1)),
+            ["availabilityViewInterval"] = 60,
+        };
+        try
+        {
+            var reply = graph.RequestAsync("/me/calendar/getSchedule", HttpMethod.Post, body, [config.FreeBusyScope], Headers, policy: GraphRetryPolicy.Read)
+                .GetAwaiter().GetResult();
+            var schedule = (reply["value"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
+            return schedule?["workingHours"] is JsonObject hours && schedule["error"] is not JsonObject
+                ? ReadWorkingHours(hours, day, config.TimeZone) : null;
+        }
+        catch (GraphRequestException error) when ((int)error.Status is 400 or 403 or 404)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>getSchedule's workingHours (days, start and end in their own time zone) as the report's zone sees them
+    /// on this day. A time zone this PC can't find (a "Customized Time Zone") is taken as the report's.</summary>
+    internal static WorkingHours? ReadWorkingHours(JsonObject hours, DateTime day, TimeZoneInfo zone)
+    {
+        static TimeSpan? Clock(string? text) =>
+            text is { Length: >= 5 } t && TimeSpan.TryParse(t.Length > 8 ? t[..8] : t, CultureInfo.InvariantCulture, out var span) ? span : null;
+        if (Clock(Text(hours, "startTime")) is not { } start || Clock(Text(hours, "endTime")) is not { } end)
+            return null;
+        var days = (hours["daysOfWeek"] as JsonArray)?.Select(d => d is JsonValue v && v.TryGetValue<string>(out var s)
+                && Enum.TryParse<DayOfWeek>(s, true, out var dow) ? (DayOfWeek?)dow : null).OfType<DayOfWeek>().ToList() ?? [];
+        var theirs = zone;
+        if ((hours["timeZone"] as JsonObject) is { } tz && Text(tz, "name") is { Length: > 0 } name)
+        {
+            try
+            {
+                theirs = TimeZoneInfo.FindSystemTimeZoneById(name);
+            }
+            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+            }
+        }
+        TimeSpan Local(TimeSpan at)
+        {
+            var converted = TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(day.Date + at, DateTimeKind.Unspecified), theirs, zone);
+            return converted.Date < day.Date ? TimeSpan.Zero : converted.Date > day.Date ? TimeSpan.FromHours(24) : converted.TimeOfDay;
+        }
+        var from = Local(start);
+        var to = end == TimeSpan.Zero ? TimeSpan.FromHours(24) : Local(end);
+        return to > from ? new WorkingHours(days, from, to) : null;
+    }
+
+    private readonly Dictionary<string, DirectoryContact?> contacts = new(StringComparer.OrdinalIgnoreCase);
+
+    public DirectoryContact? Contact(Person person)
+    {
+        if (contacts.TryGetValue(person.Address, out var known))
+            return known;
+        JsonObject? user = null;
+        foreach (var select in new[] { "id,businessPhones,mobilePhone", "id" })
+        {
+            try
+            {
+                user = Get($"{person.GraphPath}?$select={select}");
+                break;
+            }
+            catch (GraphRequestException error) when ((int)error.Status is 400 or 403 or 404)
+            {
+            }
+        }
+        var found = user is null ? null : new DirectoryContact(Text(user, "id"),
+            (user["businessPhones"] as JsonArray)?.Select(n => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null)
+                .OfType<string>().ToList() ?? [],
+            Text(user, "mobilePhone"));
+        contacts[person.Address] = found;
+        return found;
+    }
+
+    public PresenceRead Presence(Person person, string? id)
+    {
+        var scope = config.Free.PresenceScope;
+        try
+        {
+            // Silently only: a permission not yet granted is a line saying so, never a browser or a failed run, and
+            // the shared sign-in is left as it was.
+            graph.TokenAsync([scope], interactive: false).GetAwaiter().GetResult();
+            var path = person.Address == "me" ? "/me/presence"
+                : "/users/" + Uri.EscapeDataString(id ?? Contact(person)?.Id ?? person.Address) + "/presence";
+            var reply = graph.RequestAsync(path, HttpMethod.Get, null, [scope], null, interactive: false).GetAwaiter().GetResult();
+            return new PresenceRead("shown", ReadPresence(reply));
+        }
+        catch (SignInNeededException)
+        {
+            return new PresenceRead("not-granted", null, $"{scope} not granted yet");
+        }
+        catch (GraphRequestException error) when ((int)error.Status is 403 or 404)
+        {
+            return new PresenceRead("not-available", null, $"{(int)error.Status}");
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            var why = $"{error.GetType().Name}: {error.Message}";
+            return new PresenceRead("failed", null, why.Length > 160 ? why[..160] : why);
+        }
+    }
+
+    /// <summary>A presence resource.</summary>
+    internal static PresenceInfo ReadPresence(JsonObject o)
+    {
+        var message = (o["statusMessage"]?["message"] as JsonObject) is { } m ? Free.FirstLine(Text(m, "content")) : null;
+        var ooo = o["outOfOfficeSettings"] as JsonObject;
+        var where = o["workLocation"] is JsonObject wl ? Text(wl, "workLocationType") ?? Text(wl, "location")
+            : Text(o, "workLocation");
+        return new PresenceInfo(Text(o, "availability") ?? "", Text(o, "activity") ?? "", message,
+            ooo is not null && Flag(ooo, "isOutOfOffice"), ooo is not null ? Text(ooo, "message") : null,
+            where is { Length: > 0 } && !where.Equals("unknown", StringComparison.OrdinalIgnoreCase) ? where : null);
+    }
+
+    public string? AutoReply(Person person)
+    {
+        var scope = config.Free.AutoReplyScope;
+        var address = person.Address == "me" ? MyAddress() : person.Address;
+        try
+        {
+            graph.TokenAsync([scope], interactive: false).GetAwaiter().GetResult();
+            var body = new JsonObject
+            {
+                ["EmailAddresses"] = new JsonArray(address),
+                ["MailTipsOptions"] = "automaticReplies",
+            };
+            var reply = graph.RequestAsync("/me/getMailTips", HttpMethod.Post, body, [scope], null, interactive: false, policy: GraphRetryPolicy.Read)
+                .GetAwaiter().GetResult();
+            var tips = (reply["value"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault();
+            return ReadAutoReply(tips);
+        }
+        catch (Exception error) when (error is SignInNeededException or GraphRequestException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A MailTips entry's automatic reply: null when off; "" when on with no text; else its first line.</summary>
+    internal static string? ReadAutoReply(JsonObject? tips)
+    {
+        if (tips?["automaticReplies"] is not JsonObject replies || Text(replies, "message") is not { } message || message.Trim().Length == 0)
+            return null;
+        return Free.FirstLine(message) ?? "";
     }
 
     private JsonObject When(DateTime t) => new()

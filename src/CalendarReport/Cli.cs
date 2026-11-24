@@ -19,6 +19,12 @@ public sealed class CliHost
     /// <summary>Sign in, interactively.</summary>
     public Action<Config> SignIn { get; init; } = Cli.SignIn;
 
+    /// <summary>Ask for the Teams status permission ([free] presence_scope) on its own, interactively (0.12.0).</summary>
+    public Action<Config> SignInPresence { get; init; } = Cli.SignInPresence;
+
+    /// <summary>The run log for these settings: `free` writes one line per run (how many people, how it ended).</summary>
+    public Func<Config, Action<string>> Log { get; init; } = config => Logger.Create(config.LogFile);
+
     public Func<DateTime> Today { get; init; } = () => DateTime.Today;
 
     /// <summary>The time now, in the settings' time zone.</summary>
@@ -32,7 +38,7 @@ public static class Cli
     public const string Prog = "calendar-report";
 
     private const string Usage =
-        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,slots,rooms,who,groups} ...";
+        "usage: calendar-report [-h] [--version] [--config CONFIG] {config,sign-in,events,work-plan,summary,contacts,slots,free,rooms,who,groups} ...";
 
     // Explicit "\n" throughout (a raw literal would take the .cs file's line endings).
     public const string Help =
@@ -45,11 +51,13 @@ public static class Cli
         "    calendar-report summary [PEOPLE...]      where their time went, by week (rules in the settings)\n" +
         "    calendar-report contacts [PEOPLE...]     when you last met, and next meet, the people in your rings\n" +
         "    calendar-report slots PEOPLE... --minutes N   times for a meeting with them, and what's in the way\n" +
+        "    calendar-report free PEOPLE...           when they're free today for a quick call, and their Teams status\n" +
         "    calendar-report rooms                    the meeting rooms `slots` chooses from, best first\n" +
         "    calendar-report who PEOPLE...            who those words mean (names looked up in the directory)\n" +
         "    calendar-report groups                   the groups in the settings\n" +
         "    calendar-report config                   create the settings file (if missing) and say where it is\n" +
-        "    calendar-report sign-in                  sign in to Microsoft (once; opens a browser)\n\n" +
+        "    calendar-report sign-in                  sign in to Microsoft (once; opens a browser)\n" +
+        "    calendar-report sign-in --presence       ask for Teams status (Presence.Read.All) on its own\n\n" +
         "  PEOPLE: me (the default), addresses, names, or groups from the settings; commas or spaces between.\n\n" +
         "  events and work-plan:\n" +
         "    --from DATE        the first day (yyyy-mm-dd, today, tomorrow or monday); default today\n" +
@@ -77,12 +85,21 @@ public static class Cli
         "    --max N            how many candidates (default [slots] max_candidates)\n" +
         "    --topic WORDS      also list meetings already in anyone's calendar whose subject shares these words\n" +
         "    --format F         table (default) or json; --json is the same as --format json\n\n" +
+        "  free (it only prints; no meeting titles are shown):\n" +
+        "    --now              their status, where they are now, and the next gap only\n" +
+        "    --day D            today (default), tomorrow or yyyy-mm-dd (Teams status only for today)\n" +
+        "    --min N            the shortest gap shown, in minutes (default [free] min_minutes, 10)\n" +
+        "    --lunch            look past their lunch entries (lunch is away otherwise)\n" +
+        "    --no-presence      don't read their Teams status\n" +
+        "    --chat TOPIC       also a Teams chat link with \"Have you got 5 minutes for a quick call about TOPIC?\"\n" +
+        "                       filled in (you send it; nothing is ever sent)\n" +
+        "    --format F         table (default) or json; --json is the same as --format json\n\n" +
         "options:\n" +
         "  -h, --help       show this help message and exit\n" +
         "  --version        show program's version number and exit\n" +
         "  --config CONFIG  settings file (default %APPDATA%\\calendar-report\\config.toml)\n";
 
-    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "slots", "rooms", "who", "groups"];
+    private static readonly string[] Commands = ["config", "sign-in", "events", "work-plan", "summary", "contacts", "slots", "free", "rooms", "who", "groups"];
     private static readonly string[] Formats = ["table", "json", "csv"];
 
     public static string Version =>
@@ -100,6 +117,8 @@ public static class Cli
         public int? Minutes, Max;
         public string Format = "table";
         public bool WorkPlan, Cancelled, Flagged, RoomOnly;
+        public bool NowOnly, Lunch, NoPresence, Presence;
+        public string? Day, Chat;
     }
 
     private sealed class ArgumentsException(string message) : Exception(message);
@@ -116,6 +135,12 @@ public static class Cli
 
     public static void SignIn(Config config) =>
         GraphFor(config).TokenAsync([GraphSource.CalendarScope, config.LookupScope], true).GetAwaiter().GetResult();
+
+    /// <summary>The Teams status permission on its own (0.12.0): its own interactive request, so the usual sign-in
+    /// (and every other tool's) never waits on it. Where the organisation needs an admin's approval, the browser shows
+    /// "Approval required" with a request to send: that's how the request reaches IT.</summary>
+    public static void SignInPresence(Config config) =>
+        GraphFor(config).TokenAsync([config.Free.PresenceScope], true).GetAwaiter().GetResult();
 
     public static int Run(IReadOnlyList<string> argv, CliHost? host = null)
     {
@@ -145,6 +170,20 @@ public static class Cli
             var config = CalendarReport.Config.Load(options.Config, host.Env);
             switch (options.Command)
             {
+                case "sign-in" when options.Presence:
+                    try
+                    {
+                        host.SignInPresence(config);
+                    }
+                    catch (SignInNeededException error)
+                    {
+                        host.Err.WriteLine(error.Message);
+                        host.Err.WriteLine($"{config.Free.PresenceScope} wasn't granted. If the browser said \"Approval required\", the request "
+                                           + "it sent goes to your IT admins; `free` shows Teams status by itself once they approve it.");
+                        return 2;
+                    }
+                    host.Out.WriteLine($"Signed in with {config.Free.PresenceScope}: `free` now shows Teams status.");
+                    return 0;
                 case "sign-in":
                     host.SignIn(config);
                     host.Out.WriteLine("Signed in.");
@@ -161,6 +200,21 @@ public static class Cli
             {
                 host.Out.Write(RoomsCommand(config, source));
                 return 0;
+            }
+            if (options.Command == "free")
+            {
+                var log = host.Log(config);
+                try
+                {
+                    host.Out.Write(FreeCommand(options, config, source, host.Today(), host.Now(config.TimeZone)));
+                    log($"free: {options.People.Count} named, done");
+                    return 0;
+                }
+                catch (Exception error)
+                {
+                    log($"free: {options.People.Count} named, failed ({error.GetType().Name})");
+                    throw;
+                }
             }
             if (options.Command == "slots")
             {
@@ -290,6 +344,19 @@ public static class Cli
         return options.Format == "json" ? Slots.Json(report) : Slots.Table(report);
     }
 
+    /// <summary>`free` (0.12.0): the request from the options, then the report.</summary>
+    private static string FreeCommand(Options options, Config config, ISource source, DateTime today, DateTime now)
+    {
+        var day = options.Day is { } d ? Day(d, today, "--day") : today.Date;
+        if (options.NowOnly && day != today.Date)
+            throw new UsageException("--now is about today: not with --day.");
+        var people = Reports.People(options.People, config, source);
+        var request = new FreeRequest(people, day, options.NowOnly, options.Lunch, options.Minutes ?? config.Free.MinMinutes,
+            !options.NoPresence, options.Chat);
+        var report = Free.Build(config, source, request, now);
+        return options.Format == "json" ? Free.Json(report) : Free.Table(report);
+    }
+
     /// <summary>[from, to): from midnight on the first day to midnight after the last.</summary>
     internal static (DateTime From, DateTime To) Range(Options options, DateTime today)
     {
@@ -367,7 +434,8 @@ public static class Cli
             return argv[at];
         }
 
-        var reading = options.Command is "events" or "work-plan" or "summary" or "contacts" or "slots";
+        var reading = options.Command is "events" or "work-plan" or "summary" or "contacts" or "slots" or "free";
+        var free = options.Command == "free";
         var summary = options.Command == "summary";
         var contacts = options.Command == "contacts";
         var slots = options.Command == "slots";
@@ -412,6 +480,32 @@ public static class Cli
                 case (true, "--room-only") when slots:
                     options.RoomOnly = true;
                     break;
+                case (_, "--presence") when options.Command == "sign-in":
+                    options.Presence = true;
+                    break;
+                case (true, "--now") when free:
+                    options.NowOnly = true;
+                    break;
+                case (true, "--day") when free:
+                    options.Day = Value(name, ref i, arg);
+                    break;
+                case (true, "--min") when free:
+                    options.Minutes = Number(name, Value(name, ref i, arg), 1, 240);
+                    break;
+                case (true, "--lunch") when free:
+                    options.Lunch = true;
+                    break;
+                case (true, "--no-presence") when free:
+                    options.NoPresence = true;
+                    break;
+                case (true, "--chat") when free:
+                    options.Chat = Value(name, ref i, arg);
+                    break;
+                case (true, "--json") when free:
+                    options.Format = "json";
+                    break;
+                case (true, "--from" or "--to" or "--days" or "--out") when free:
+                    throw new ArgumentsException($"unrecognized arguments: {arg} (free takes --day, and only prints)");
                 case (true, "--to" or "--days" or "--out") when slots:
                     throw new ArgumentsException($"unrecognized arguments: {arg} (slots takes --from, --by and --until, and only prints)");
                 case (true, "--ring") when contacts:
@@ -436,8 +530,8 @@ public static class Cli
                     break;
                 case (true, "--format"):
                     options.Format = Value(name, ref i, arg).ToLowerInvariant();
-                    if (!(summary || contacts || slots ? Formats[..2] : Formats).Contains(options.Format))
-                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary || contacts || slots ? "" : ", 'csv'")})");
+                    if (!(summary || contacts || slots || free ? Formats[..2] : Formats).Contains(options.Format))
+                        throw new ArgumentsException($"argument --format: invalid choice: '{options.Format}' (choose from 'table', 'json'{(summary || contacts || slots || free ? "" : ", 'csv'")})");
                     break;
                 case (true, "--weeks") when summary:
                     var w = Value(name, ref i, arg);
@@ -475,6 +569,8 @@ public static class Cli
             throw new ArgumentsException("argument --weeks: not allowed with argument --to or --days");
         if (options.Command == "who" && options.People.Count == 0)
             throw new ArgumentsException("the following arguments are required: people");
+        if (options.Command == "free" && options.People.Count == 0)
+            throw new ArgumentsException("the following arguments are required: people (who you'd call)");
         if (options.Command == "slots" && options.People.Count == 0)
             throw new ArgumentsException("the following arguments are required: people (who the meeting is with)");
         if (options.Command is "config" or "sign-in" or "groups" or "rooms" && options.People.Count > 0)

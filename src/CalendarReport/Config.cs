@@ -64,11 +64,20 @@ public sealed partial class Config
         "# name = \"Room 1\"\n" +
         "# address = \"room1@example.com\"\n" +
         "# capacity = 6                # optional: a room with none counts as fitting\n" +
-        "# floor = \"3\"                 # optional\n";
+        "# floor = \"3\"                 # optional\n" +
+        "\n" +
+        "# How `free` reads someone's day for a quick call (see the README, \"Free to call\").\n" +
+        "# [free]\n" +
+        "# min_minutes = 10              # the shortest gap shown\n" +
+        "# rules = \"slots\"               # the rule list for what's in the way (lunch, travel, leave)\n" +
+        "# presence_scope = \"Presence.Read.All\"   # Teams status, asked for silently only\n" +
+        "# auto_reply_scope = \"Mail.Read\"         # automatic replies (MailTips)\n" +
+        "# show_phone = true             # the work numbers the directory lists\n" +
+        "# focus = '\\bfocus\\b'           # subjects of blocks that could be interrupted\n";
 
     /// <summary>Every top-level setting: the strict check's list, and what a base file may supply.</summary>
     public static readonly string[] KnownKeys =
-        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "free_busy_scope", "rooms_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "leave"];
+        ["login_hint", "tenant", "msal_cache", "log_file", "time_zone", "lookup_scope", "free_busy_scope", "rooms_scope", "calendar_months_ahead", "groups", "summary", "view", "rules", "contacts", "slots", "free", "leave"];
 
     private static readonly string[] TopKeys = KnownKeys;
 
@@ -96,6 +105,9 @@ public sealed partial class Config
 
     /// <summary>[slots]: how `slots` finds and sorts candidate times (0.7.0).</summary>
     public SlotSettings Slots { get; init; } = new();
+
+    /// <summary>[free]: how `free` reads someone's day for a quick call (0.12.0).</summary>
+    public FreeSettings Free { get; init; } = new();
 
     /// <summary>[leave]: what counts as leave and a bank holiday, the rules the calendar tools share (background-tools-lib
     /// CalendarDays; a base file's [leave] fills it in). Used by `slots` (0.7.0).</summary>
@@ -214,6 +226,7 @@ public sealed partial class Config
             Summary = SummarySettings.Parse(raw, full, groups),
             Contacts = ContactSettings.Parse(raw, full, MonthsAhead(raw, full)),
             Slots = SlotSettings.Parse(raw, full),
+            Free = FreeSettings.Parse(raw, full),
             Leave = ReadLeave(raw, full),
         };
     }

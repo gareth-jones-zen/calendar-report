@@ -82,6 +82,28 @@ internal sealed class FakeSource : ISource
             StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>Working hours by address (0.12.0); anyone not here can't be read, so the settings' hours are used.</summary>
+    public Dictionary<string, WorkingHours> Hours { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public WorkingHours? WorkingHours(Person person, DateTime day) => Hours.GetValueOrDefault(person.Address);
+
+    /// <summary>Teams status by address; anyone not here: the permission isn't granted (waiting on IT).</summary>
+    public Dictionary<string, PresenceRead> Presences { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public PresenceRead Presence(Person person, string? id)
+    {
+        Asked.Add($"presence {person.Address}");
+        return Presences.GetValueOrDefault(person.Address) ?? new PresenceRead("not-granted", null, "Presence.Read.All not granted yet");
+    }
+
+    public Dictionary<string, string> AutoReplies { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public string? AutoReply(Person person)
+    {
+        Asked.Add($"auto-reply {person.Address}");
+        return AutoReplies.GetValueOrDefault(person.Address);
+    }
+
+    public Dictionary<string, DirectoryContact> Contacts { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public DirectoryContact? Contact(Person person) => Contacts.GetValueOrDefault(person.Address);
+
     public static Event Meeting(string start, string end, string subject, int attendees = 3, bool online = true,
         string showAs = "busy", bool cancelled = false, string? response = "accepted", bool allDay = false) =>
         new(DateTime.Parse(start), DateTime.Parse(end), allDay, showAs, subject, null, "Organiser", attendees, online, "normal", [],
